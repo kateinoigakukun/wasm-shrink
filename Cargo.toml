@@ -3,6 +3,7 @@ name = "wasm-shrink"
 version = "0.1.0"
 edition = "2018"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
+walrus = "0.19"
+structopt = "0.3"
+anyhow = "1.0"
