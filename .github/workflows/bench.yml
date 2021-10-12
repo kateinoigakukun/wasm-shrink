@@ -1,0 +1,16 @@
+name: Benchmark
+on:
+  push:
+    branches: [main]
+jobs:
+  run-benchmark:
+    name: Run Benchmark
+    runs-on: ubuntu-20.04
+    steps:
+      - uses: actions/checkout@v2
+      - run: ./tracker/ci/bench.sh
+      - name: Deploy
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./tracker/html
