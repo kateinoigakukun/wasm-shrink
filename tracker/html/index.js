@@ -40,7 +40,7 @@ async function start() {
         },
         tooltip: {
             formatter: function() {
-                return 'size: ' + this.y + '<br>date: ' + this.point.date + '<br>rev: ' + this.point.rev;
+                return `size: ${this.y}<br>rate: ${this.point.rate}<br>date: ${this.point.date}<br>rev: ${this.point.rev}`;
             }
         },
         series: [{ name: json.name, data }]

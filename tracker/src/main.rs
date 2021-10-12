@@ -64,6 +64,7 @@ struct Record {
     rev: String,
     date: DateTime<Utc>,
     size: Option<u64>,
+    rate: Option<f64>,
 }
 #[derive(Serialize, Deserialize)]
 struct TargetBenchmark {
@@ -177,6 +178,7 @@ fn collect_records(
 ) -> Result<Vec<Record>, Box<dyn std::error::Error>> {
     let mut records = Vec::new();
     let abs_target = target.canonicalize()?;
+    let original_size = std::fs::metadata(&abs_target)?.len();
 
     for rev in revs {
         let date = exec(
@@ -196,6 +198,7 @@ fn collect_records(
                     rev: rev.to_string(),
                     date: date,
                     size: Some(size),
+                    rate: Some(size as f64 / original_size as f64),
                 }
             }
             Err(err) => {
@@ -204,6 +207,7 @@ fn collect_records(
                     rev: rev.to_string(),
                     date: date,
                     size: None,
+                    rate: None,
                 }
             }
         };
