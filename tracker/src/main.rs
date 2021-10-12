@@ -176,6 +176,7 @@ fn collect_records(
     target: &PathBuf,
 ) -> Result<Vec<Record>, Box<dyn std::error::Error>> {
     let mut records = Vec::new();
+    let abs_target = target.canonicalize()?;
 
     for rev in revs {
         let date = exec(
@@ -188,7 +189,7 @@ fn collect_records(
         )?;
         println!("{}", date);
         let date = DateTime::parse_from_rfc2822(&date.trim_end())?.with_timezone(&Utc);
-        let record = match measure_size_in_rev(&rev, &workdir, &target) {
+        let record = match measure_size_in_rev(&rev, &workdir, &abs_target) {
             Ok(size) => {
                 log::info!("{} {}", rev, size);
                 Record {
