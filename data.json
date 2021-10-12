@@ -2,14 +2,34 @@
   "name": "fixture/swift-hello.wasm",
   "records": [
     {
-      "rev": "0e0fd4b05859ad9b6d477ac17ca88d213ac11c3a",
-      "date": "2021-10-12T06:17:01Z",
-      "size": null
+      "rev": "c9b7a87a0940d6282445253a2661fac07d33ca90",
+      "date": "2021-10-12T08:03:41Z",
+      "size": 4339243
+    },
+    {
+      "rev": "45c2641c867b6bf4a16afe90d80d7a43a9f77127",
+      "date": "2021-10-12T08:00:19Z",
+      "size": 4339243
+    },
+    {
+      "rev": "4e5bedbc32a71119465714466c46b94a068fb552",
+      "date": "2021-10-12T07:54:40Z",
+      "size": 4339243
+    },
+    {
+      "rev": "6d814c5666d15bc612aeb1ad13f7265c5939d7cc",
+      "date": "2021-10-12T07:42:24Z",
+      "size": 4339243
+    },
+    {
+      "rev": "9a0d6a2297c2db9396cf6697a94ce24e7a667afd",
+      "date": "2021-10-12T07:40:52Z",
+      "size": 4339243
     },
     {
       "rev": "6458ed54d23b23bf1ee8dae543974c140fa0aa06",
       "date": "2021-10-11T15:51:40Z",
-      "size": null
+      "size": 4339243
     },
     {
       "rev": "644a01a4c11d8ceed689ab4145ce1b25cc9b1fc6",
