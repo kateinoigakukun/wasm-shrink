@@ -7,3 +7,6 @@ edition = "2018"
 walrus = "0.19"
 structopt = "0.3"
 anyhow = "1.0"
+
+[workspace]
+members = ["tracker"]
