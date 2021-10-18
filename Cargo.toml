@@ -7,6 +7,11 @@ edition = "2018"
 walrus = "0.19"
 structopt = "0.3"
 anyhow = "1.0"
+log = "0.4"
+env_logger = "0.8"
+
+[patch.crates-io]
+walrus = { git = "https://github.com/kateinoigakukun/walrus.git", branch = "wasm-shrink" }
 
 [workspace]
 members = ["tracker"]
