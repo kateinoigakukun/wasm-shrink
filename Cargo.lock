@@ -472,7 +472,7 @@ checksum = "5fecdca9a5291cc2b8dcf7dc02453fee791a280f3743cb0905f8822ae463b3fe"
 [[package]]
 name = "walrus"
 version = "0.19.0"
-source = "git+https://github.com/kateinoigakukun/walrus.git?branch=wasm-shrink#b319b6db0d1f06acb7ebfc6dfa75f6ea898d1a01"
+source = "git+https://github.com/kateinoigakukun/walrus.git?branch=wasm-shrink#244c8cec8afeec43690a95eca35293370bcfc1c8"
 dependencies = [
  "anyhow",
  "id-arena",
@@ -485,7 +485,7 @@ dependencies = [
 [[package]]
 name = "walrus-macro"
 version = "0.19.0"
-source = "git+https://github.com/kateinoigakukun/walrus.git?branch=wasm-shrink#b319b6db0d1f06acb7ebfc6dfa75f6ea898d1a01"
+source = "git+https://github.com/kateinoigakukun/walrus.git?branch=wasm-shrink#244c8cec8afeec43690a95eca35293370bcfc1c8"
 dependencies = [
  "heck",
  "proc-macro2",

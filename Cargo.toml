@@ -12,6 +12,7 @@ env_logger = "0.8"
 
 [patch.crates-io]
 walrus = { git = "https://github.com/kateinoigakukun/walrus.git", branch = "wasm-shrink" }
+# walrus = { path = "../walrus" }
 
 [workspace]
 members = ["tracker"]
