@@ -34,17 +34,19 @@ impl FunctionHash {
 }
 
 struct EquivalenceClass<'func> {
-    /// Non-empty list of functions belonging to a same class
+    head_func: &'func walrus::Function,
+    /// List of functions belonging to a same class
     funcs: Vec<&'func walrus::Function>,
     hash: FunctionHash,
 }
 
 impl<'func> EquivalenceClass<'func> {
     fn head_func(&self) -> &'func walrus::Function {
-        self.funcs[0]
+        self.head_func
     }
     fn is_eligible_to_merge(&self) -> bool {
-        self.funcs.len() >= 2
+        // ensure that this class has two funcs
+        !self.funcs.is_empty()
     }
 }
 
@@ -70,7 +72,8 @@ pub fn merge_funcs(module: &mut walrus::Module) {
             continue;
         }
         let mut classes: Vec<EquivalenceClass> = vec![EquivalenceClass {
-            funcs: vec![group[0]],
+            head_func: group[0],
+            funcs: vec![],
             hash: key,
         }];
 
@@ -85,7 +88,8 @@ pub fn merge_funcs(module: &mut walrus::Module) {
 
             if !found {
                 classes.push(EquivalenceClass {
-                    funcs: vec![f],
+                    head_func: f,
+                    funcs: vec![],
                     hash: key,
                 })
             }
@@ -121,35 +125,6 @@ pub fn merge_funcs(module: &mut walrus::Module) {
     log::debug!("mergable_funcs = {}", mergable_funcs);
 }
 
-struct IdPairMap<Id: Hash + Eq> {
-    lhs_to_rhs: HashMap<Id, Id>,
-}
-
-impl<Id: Hash + Eq> Deref for IdPairMap<Id> {
-    type Target = HashMap<Id, Id>;
-    fn deref(&self) -> &Self::Target {
-        &self.lhs_to_rhs
-    }
-}
-
-impl<Id: Hash + Eq> IdPairMap<Id> {
-    fn new() -> Self {
-        Self {
-            lhs_to_rhs: HashMap::new(),
-        }
-    }
-
-    /// Returns `true` iff the pair of local id is not compatible with former uses
-    fn record(&mut self, lhs: Id, rhs: Id) -> bool {
-        match self.lhs_to_rhs.get(&lhs) {
-            Some(found_rhs) => found_rhs != &rhs,
-            None => {
-                self.lhs_to_rhs.insert(lhs, rhs);
-                false
-            }
-        }
-    }
-}
 
 /// Note that this comparator should satisfy transitivity
 /// are_in_equivalence_class(A, B) && are_in_equivalence_class(B, C) -> are_in_equivalence_class(A, C)
@@ -167,12 +142,49 @@ fn are_in_equivalence_class(
     }
 
     let lhs_iter = dfs_pre_order_iter(&lhs, lhs.entry_block());
+    let lhs_iter = lhs_iter.map(|i| Some(i)).chain(std::iter::repeat(None));
     let rhs_iter = dfs_pre_order_iter(&rhs, rhs.entry_block());
+    let rhs_iter = rhs_iter.map(|i| Some(i)).chain(std::iter::repeat(None));
+
+    struct IdPairMap<Id: Hash + Eq> {
+        lhs_to_rhs: HashMap<Id, Id>,
+    }
+
+    impl<Id: Hash + Eq> Deref for IdPairMap<Id> {
+        type Target = HashMap<Id, Id>;
+        fn deref(&self) -> &Self::Target {
+            &self.lhs_to_rhs
+        }
+    }
+
+    impl<Id: Hash + Eq> IdPairMap<Id> {
+        fn new() -> Self {
+            Self {
+                lhs_to_rhs: HashMap::new(),
+            }
+        }
+
+        /// Returns `true` iff the pair of local id is not compatible with former uses
+        fn record(&mut self, lhs: Id, rhs: Id) -> bool {
+            match self.lhs_to_rhs.get(&lhs) {
+                Some(found_rhs) => found_rhs != &rhs,
+                None => {
+                    self.lhs_to_rhs.insert(lhs, rhs);
+                    false
+                }
+            }
+        }
+    }
 
     let mut locals_map = IdPairMap::<LocalId>::new();
     let mut seqs_map = IdPairMap::<InstrSeqId>::new();
 
     for (lhs_instr, rhs_instr) in lhs_iter.zip(rhs_iter) {
+        let (lhs_instr, rhs_instr) = match (lhs_instr, rhs_instr) {
+            (None, None) => break,
+            (Some(lhs), Some(rhs)) => (lhs, rhs),
+            _ => return false,
+        };
         if lhs_instr.opcode() != rhs_instr.opcode() {
             return false;
         }
@@ -534,7 +546,7 @@ fn dfs_pre_order_iter<'instr>(
 mod tests {
     use walrus::{FunctionBuilder, ValType};
 
-    use crate::merge::const_param::FunctionHash;
+    use crate::merge::const_param::{are_in_equivalence_class, FunctionHash};
 
     fn create_func_hash(builder: FunctionBuilder, module: &mut walrus::Module) -> FunctionHash {
         let f = builder.finish(vec![], &mut module.funcs);
@@ -566,5 +578,32 @@ mod tests {
         f4_builder.func_body().i64_const(43).drop();
         let f4_hash_value = create_func_hash(f4_builder, &mut module);
         assert_ne!(f3_hash_value, f4_hash_value, "param type");
+    }
+
+    #[test]
+    fn test_are_in_equivalence_class() {
+        let mut module = walrus::Module::default();
+        let mut f1_builder = FunctionBuilder::new(&mut module.types, &[], &[]);
+        f1_builder.func_body().i32_const(42).drop();
+        let f1_id = f1_builder.finish(vec![], &mut module.funcs);
+
+        let mut f2_builder = FunctionBuilder::new(&mut module.types, &[], &[]);
+        f2_builder.func_body().i32_const(43).drop();
+        let f2_id = f2_builder.finish(vec![], &mut module.funcs);
+
+        assert!(are_in_equivalence_class(
+            module.funcs.get(f1_id),
+            module.funcs.get(f2_id),
+            &module
+        ));
+
+        let mut f3_builder = FunctionBuilder::new(&mut module.types, &[], &[]);
+        f3_builder.func_body().i32_const(43).drop().i32_const(24).drop();
+        let f3_id = f3_builder.finish(vec![], &mut module.funcs);
+        assert!(!are_in_equivalence_class(
+            module.funcs.get(f2_id),
+            module.funcs.get(f3_id),
+            &module
+        ));
     }
 }
