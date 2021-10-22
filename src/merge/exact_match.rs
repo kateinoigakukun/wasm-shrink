@@ -69,6 +69,9 @@ pub fn merge_funcs(module: &mut walrus::Module) {
         }
     }
 
+    let mergable_funcs = replacing_map.len();
+    log::debug!("mergable_funcs = {}", mergable_funcs);
+
     for (_, func) in module.funcs.iter_local_mut() {
         let entry = func.entry_block();
         walrus::ir::dfs_pre_order_mut(

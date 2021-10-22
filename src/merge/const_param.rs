@@ -1,19 +1,18 @@
 //! Constant Parameterization
 
-
 use std::collections::{hash_map::DefaultHasher, HashMap};
 use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 
 use walrus::ir::{
-    Br, BrIf, GlobalGet, GlobalSet, IfElse, Instr, InstrSeqId, LocalGet, LocalSet,
-    LocalTee, MemoryGrow, MemorySize, TableFill, TableGet, TableGrow, TableSet, TableSize, Value,
+    Br, BrIf, GlobalGet, GlobalSet, IfElse, Instr, InstrSeqId, LocalGet, LocalSet, LocalTee,
+    MemoryGrow, MemorySize, TableFill, TableGet, TableGrow, TableSet, TableSize, Value,
 };
 use walrus::{InstrLocId, LocalFunction, LocalId};
 
 use super::func_hash;
 
-#[derive(PartialEq, Eq, Debug, Hash)]
+#[derive(PartialEq, Eq, Debug, Hash, Clone, Copy)]
 struct FunctionHash(u64);
 
 impl FunctionHash {
@@ -34,8 +33,24 @@ impl FunctionHash {
     }
 }
 
+struct EquivalenceClass<'func> {
+    /// Non-empty list of functions belonging to a same class
+    funcs: Vec<&'func walrus::Function>,
+    hash: FunctionHash,
+}
+
+impl<'func> EquivalenceClass<'func> {
+    fn head_func(&self) -> &'func walrus::Function {
+        self.funcs[0]
+    }
+    fn is_eligible_to_merge(&self) -> bool {
+        self.funcs.len() >= 2
+    }
+}
+
 pub fn merge_funcs(module: &mut walrus::Module) {
     let mut hashed_group: HashMap<FunctionHash, Vec<&walrus::Function>> = HashMap::new();
+    // FIXME: This grouping can be done by O(NlogN) by using sort algorithm
     for f in module.funcs.iter() {
         let key = match FunctionHash::hash(f, &module) {
             Some(key) => key,
@@ -48,18 +63,62 @@ pub fn merge_funcs(module: &mut walrus::Module) {
         }
     }
 
-    let mut deferred = vec![];
-    log::debug!("Dump functions grouped by hash");
+    let mut fn_classes = Vec::<EquivalenceClass>::new();
+
     for (key, group) in hashed_group {
         if group.len() < 2 {
             continue;
         }
-        log::debug!("Group #{}", key.0);
+        let mut classes: Vec<EquivalenceClass> = vec![EquivalenceClass {
+            funcs: vec![group[0]],
+            hash: key,
+        }];
+
         for f in group {
-            deferred.push(f);
-            log::debug!(" - {:?}", f.name);
+            let mut found = false;
+            for class in classes.iter_mut() {
+                if are_in_equivalence_class(class.head_func(), f, &module) {
+                    class.funcs.push(f);
+                    found = true;
+                }
+            }
+
+            if !found {
+                classes.push(EquivalenceClass {
+                    funcs: vec![f],
+                    hash: key,
+                })
+            }
         }
+        fn_classes.append(&mut classes);
     }
+
+    log::debug!("Dump function equivalence classes");
+    let mut mergable_funcs = 0;
+    for class in fn_classes {
+        if !class.is_eligible_to_merge() {
+            continue;
+        }
+        log::debug!(
+            "EC: head={}",
+            class
+                .head_func()
+                .name
+                .as_ref()
+                .map(String::as_str)
+                .unwrap_or("unknown")
+        );
+        for fn_entry in class.funcs.iter().skip(1) {
+            let name = fn_entry
+                .name
+                .as_ref()
+                .map(String::as_str)
+                .unwrap_or("unknown");
+            log::debug!(" - {}", name);
+        }
+        mergable_funcs += class.funcs.len() - 1;
+    }
+    log::debug!("mergable_funcs = {}", mergable_funcs);
 }
 
 struct IdPairMap<Id: Hash + Eq> {
@@ -92,8 +151,13 @@ impl<Id: Hash + Eq> IdPairMap<Id> {
     }
 }
 
-#[allow(unused)]
-fn are_in_equivalence_class(lhs: &walrus::Function, rhs: &walrus::Function, module: &walrus::Module) -> bool {
+/// Note that this comparator should satisfy transitivity
+/// are_in_equivalence_class(A, B) && are_in_equivalence_class(B, C) -> are_in_equivalence_class(A, C)
+fn are_in_equivalence_class(
+    lhs: &walrus::Function,
+    rhs: &walrus::Function,
+    module: &walrus::Module,
+) -> bool {
     let (lhs, rhs) = match (&lhs.kind, &rhs.kind) {
         (walrus::FunctionKind::Local(lhs), walrus::FunctionKind::Local(rhs)) => (lhs, rhs),
         _ => return false,
