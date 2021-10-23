@@ -1004,19 +1004,20 @@ fn dfs_pre_order_iter<'instr>(
                 };
                 Some(instr)
             }
-            match self.current_seq.as_mut() {
-                Some((seq, seq_id)) => next_from_seq(seq, *seq_id, &mut self.seq_stack),
-                None => {
-                    let seq_id = match self.seq_stack.pop() {
-                        Some(seq_id) => seq_id,
-                        None => return None,
-                    };
-                    let mut seq = self.func.block(seq_id).iter().enumerate();
-                    let instr = next_from_seq(&mut seq, seq_id, &mut self.seq_stack);
-                    self.current_seq.replace((seq, seq_id));
-                    instr
+            if let Some((seq, seq_id)) = self.current_seq.as_mut() {
+                if let Some(instr) = next_from_seq(seq, *seq_id, &mut self.seq_stack) {
+                    return Some(instr);
                 }
             }
+
+            let seq_id = match self.seq_stack.pop() {
+                Some(seq_id) => seq_id,
+                None => return None,
+            };
+            let mut seq = self.func.block(seq_id).iter().enumerate();
+            let instr = next_from_seq(&mut seq, seq_id, &mut self.seq_stack);
+            self.current_seq.replace((seq, seq_id));
+            instr
         }
     }
     Iter {
@@ -1147,6 +1148,20 @@ mod tests {
                 .unwrap_local()
                 .entry_block()
         );
+    }
+
+    #[test]
+    fn test_dfs_pre_order_iter() {
+        let mut module = walrus::Module::default();
+        let mut f1_builder = FunctionBuilder::new(&mut module.types, &[], &[ValType::F64]);
+        f1_builder.func_body().block(ValType::F64, |b| {
+            b.f32_const(1.0);
+        });
+        let f1 = f1_builder.finish(vec![], &mut module.funcs);
+        let f1 = module.funcs.get(f1).kind.unwrap_local();
+        let iter = dfs_pre_order_iter(f1, f1.entry_block());
+        let instrs = iter.collect::<Vec<_>>();
+        assert_eq!(instrs.len(), 2, "not enough instrs '{:?}'", instrs);
     }
 
     #[test]
