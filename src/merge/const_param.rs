@@ -1,14 +1,13 @@
 //! Constant Parameterization
 
-use std::collections::btree_map::Values;
 use std::collections::{hash_map::DefaultHasher, HashMap};
 use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 
 use walrus::ir::{
-    Block, Br, BrIf, BrTable, Const, GlobalGet, GlobalSet, IfElse, Instr, InstrSeqId, LocalGet,
-    LocalSet, LocalTee, Loop, MemoryGrow, MemorySize, TableFill, TableGet, TableGrow, TableSet,
-    TableSize, Value, Visitor,
+    Block, Br, BrIf, BrTable, Const, GlobalGet, GlobalSet, IfElse, Instr, InstrSeqId, InstrSeqType,
+    LocalGet, LocalSet, LocalTee, Loop, MemoryGrow, MemorySize, TableFill, TableGet, TableGrow,
+    TableSet, TableSize, Value, Visitor,
 };
 use walrus::{
     FunctionBuilder, FunctionId, InstrLocId, InstrSeqBuilder, LocalFunction, LocalId, ValType,
@@ -38,16 +37,16 @@ impl FunctionHash {
 }
 
 #[derive(Debug)]
-struct EquivalenceClass<'func> {
-    head_func: &'func walrus::Function,
+struct EquivalenceClass {
+    head_func: FunctionId,
     /// List of functions belonging to a same class
-    funcs: Vec<&'func walrus::Function>,
+    funcs: Vec<FunctionId>,
     hash: FunctionHash,
 }
 
-impl<'func> EquivalenceClass<'func> {
-    fn head_func(&self) -> &'func walrus::Function {
-        self.head_func
+impl EquivalenceClass {
+    fn head_func<'module>(&self, module: &'module walrus::Module) -> &'module walrus::Function {
+        module.funcs.get(self.head_func)
     }
     fn is_eligible_to_merge(&self) -> bool {
         // ensure that this class has two funcs
@@ -56,6 +55,42 @@ impl<'func> EquivalenceClass<'func> {
 }
 
 pub fn merge_funcs(module: &mut walrus::Module) {
+    let fn_classes = collect_equivalence_class(module);
+
+    log::debug!("Dump function equivalence classes");
+    let mut mergable_funcs = 0;
+    for class in fn_classes.iter() {
+        if !class.is_eligible_to_merge() {
+            continue;
+        }
+        log::debug!(
+            "EC: head={}",
+            class
+                .head_func(&module)
+                .name
+                .as_ref()
+                .map(String::as_str)
+                .unwrap_or("unknown")
+        );
+        for fn_id in class.funcs.iter().skip(1) {
+            let fn_entry = module.funcs.get(*fn_id);
+            let name = fn_entry
+                .name
+                .as_ref()
+                .map(String::as_str)
+                .unwrap_or("unknown");
+            log::debug!(" - {}", name);
+        }
+        mergable_funcs += class.funcs.len() - 1;
+    }
+    log::debug!("mergable_funcs = {}", mergable_funcs);
+
+    for class in fn_classes {
+        try_merge_equivalence_class(&class, module);
+    }
+}
+
+fn collect_equivalence_class(module: &walrus::Module) -> Vec<EquivalenceClass> {
     let mut hashed_group: HashMap<FunctionHash, Vec<&walrus::Function>> = HashMap::new();
     // FIXME: This grouping can be done by O(NlogN) by using sort algorithm
     for f in module.funcs.iter() {
@@ -70,14 +105,14 @@ pub fn merge_funcs(module: &mut walrus::Module) {
         }
     }
 
-    let mut fn_classes = Vec::<EquivalenceClass>::new();
+    let mut fn_classes: Vec<EquivalenceClass> = vec![];
 
     for (key, group) in hashed_group {
         if group.len() < 2 {
             continue;
         }
         let mut classes: Vec<EquivalenceClass> = vec![EquivalenceClass {
-            head_func: group[0],
+            head_func: group[0].id(),
             funcs: vec![],
             hash: key,
         }];
@@ -85,15 +120,15 @@ pub fn merge_funcs(module: &mut walrus::Module) {
         for f in group {
             let mut found = false;
             for class in classes.iter_mut() {
-                if are_in_equivalence_class(class.head_func(), f, &module) {
-                    class.funcs.push(f);
+                if are_in_equivalence_class(class.head_func(module), f, &module) {
+                    class.funcs.push(f.id());
                     found = true;
                 }
             }
 
             if !found {
                 classes.push(EquivalenceClass {
-                    head_func: f,
+                    head_func: f.id(),
                     funcs: vec![],
                     hash: key,
                 })
@@ -101,39 +136,13 @@ pub fn merge_funcs(module: &mut walrus::Module) {
         }
         fn_classes.append(&mut classes);
     }
-
-    log::debug!("Dump function equivalence classes");
-    let mut mergable_funcs = 0;
-    for class in fn_classes {
-        if !class.is_eligible_to_merge() {
-            continue;
-        }
-        log::debug!(
-            "EC: head={}",
-            class
-                .head_func()
-                .name
-                .as_ref()
-                .map(String::as_str)
-                .unwrap_or("unknown")
-        );
-        for fn_entry in class.funcs.iter().skip(1) {
-            let name = fn_entry
-                .name
-                .as_ref()
-                .map(String::as_str)
-                .unwrap_or("unknown");
-            log::debug!(" - {}", name);
-        }
-        mergable_funcs += class.funcs.len() - 1;
-    }
-    log::debug!("mergable_funcs = {}", mergable_funcs);
+    fn_classes
 }
 
 #[allow(unused)]
 fn try_merge_equivalence_class(class: &EquivalenceClass, module: &mut walrus::Module) {
-    let params = match derive_params(class) {
-        Some(params) => ParamInfos(params),
+    let params = match derive_params(class, module) {
+        Some(params) => params,
         None => {
             log::warn!("derive_params returns None unexpectedly for {:?}", class);
             return;
@@ -142,9 +151,15 @@ fn try_merge_equivalence_class(class: &EquivalenceClass, module: &mut walrus::Mo
 
     let merged_func = create_merged_func(class.head_func, &params, module);
 
-    let mut thunks = vec![create_thunk_func(class.head_func, todo!(), &params, 0)];
+    let mut thunks = vec![create_thunk_func(
+        class.head_func(&module),
+        todo!(),
+        &params,
+        0,
+    )];
 
     for (idx, from) in class.funcs.iter().enumerate() {
+        let from = module.funcs.get(*from);
         thunks.push(create_thunk_func(from, todo!(), &params, idx + 1))
     }
 
@@ -173,9 +188,10 @@ impl ParamInfos {
     }
 }
 
-struct Cloner<'a, 'b> {
-    original: &'b walrus::LocalFunction,
+struct Cloner<'a> {
+    iseq_type_map: HashMap<InstrSeqId, InstrSeqType>,
     builder: FunctionBuilder,
+    /// `(original_iseq_id, position)`
     iseq_stack: Vec<(InstrSeqId, usize)>,
     /// `original` to `new` iseq id map
     iseq_map: HashMap<InstrSeqId, InstrSeqId>,
@@ -185,37 +201,61 @@ struct Cloner<'a, 'b> {
     extra_args: Vec<LocalId>,
 }
 
-impl<'a, 'b> Cloner<'a, 'b> {
+impl<'a> Cloner<'a> {
     fn clone(
-        original: &'b walrus::LocalFunction,
+        original: FunctionId,
         params: &'a ParamInfos,
         module: &mut walrus::Module,
     ) -> FunctionId {
-        let (param_types, result_types) = module.types.params_results(original.ty());
+        let original = module.funcs.get(original);
+        let original = original.kind.unwrap_local();
 
-        let result_types = result_types.to_vec();
-        let mut param_types: Vec<ValType> = param_types.to_vec();
-        let extra_params_types = params
-            .iter()
-            .map(|param| param.values.val_type())
-            .collect::<Vec<_>>();
-        param_types.append(&mut extra_params_types.clone());
+        let iseq_type_map = {
+            #[derive(Default)]
+            struct Collector {
+                iseq_type_map: HashMap<InstrSeqId, InstrSeqType>,
+            }
+            impl<'instr> Visitor<'instr> for Collector {
+                fn start_instr_seq(&mut self, instr_seq: &'instr walrus::ir::InstrSeq) {
+                    self.iseq_type_map.insert(instr_seq.id(), instr_seq.ty);
+                }
+            }
+            let mut collector = Collector::default();
+            walrus::ir::dfs_in_order(&mut collector, original, original.entry_block());
+            collector.iseq_type_map
+        };
+
+        let (param_types, result_types, extra_args) = {
+            let (param_types, result_types) = module.types.params_results(original.ty());
+
+            let result_types = result_types.to_vec();
+            let mut param_types: Vec<ValType> = param_types.to_vec();
+            let extra_params_types = params
+                .iter()
+                .map(|param| param.values.val_type())
+                .collect::<Vec<_>>();
+            param_types.append(&mut extra_params_types.clone());
+
+            let mut extra_args = vec![];
+            for ty in extra_params_types {
+                extra_args.push(module.locals.add(ty));
+            }
+            (param_types, result_types, extra_args)
+        };
 
         let builder = FunctionBuilder::new(&mut module.types, &param_types, &result_types);
-
-        let extra_args = extra_params_types
-            .iter()
-            .map(|ty| module.locals.add(*ty))
-            .collect::<Vec<_>>();
+        let mut iseq_map = HashMap::new();
+        iseq_map.insert(original.entry_block(), builder.func_body_id());
 
         let mut cloner = Cloner {
-            original,
+            iseq_type_map,
             builder,
             iseq_stack: vec![],
-            iseq_map: HashMap::new(),
+            iseq_map,
             params,
             extra_args,
         };
+
         walrus::ir::dfs_in_order(&mut cloner, original, original.entry_block());
         let (builder, mut extra_args) = cloner.take();
 
@@ -233,15 +273,17 @@ impl<'a, 'b> Cloner<'a, 'b> {
     }
 
     fn current_seq(&mut self) -> InstrSeqBuilder {
-        self.builder.instr_seq(self.current_seq_id_and_pos().0)
+        let original_iseq_id = self.current_seq_id_and_pos().0;
+        let new_iseq_id = self.iseq_map.get(&original_iseq_id).unwrap();
+        self.builder.instr_seq(*new_iseq_id)
     }
 
     fn get_or_create_iseq_id(&mut self, original_iseq_id: &InstrSeqId) -> InstrSeqId {
         match self.iseq_map.get(original_iseq_id) {
             Some(new_iseq_id) => *new_iseq_id,
             None => {
-                let iseq = self.original.block(*original_iseq_id);
-                let iseq_builder = self.builder.dangling_instr_seq(iseq.ty);
+                let iseq_ty = self.iseq_type_map.get(original_iseq_id).unwrap();
+                let iseq_builder = self.builder.dangling_instr_seq(*iseq_ty);
                 self.iseq_map.insert(*original_iseq_id, iseq_builder.id());
                 iseq_builder.id()
             }
@@ -253,11 +295,11 @@ impl<'a, 'b> Cloner<'a, 'b> {
     }
 }
 
-impl<'instr> Visitor<'instr> for Cloner<'_, '_> {
+impl<'instr> Visitor<'instr> for Cloner<'_> {
     fn start_instr_seq(&mut self, instr_seq: &'instr walrus::ir::InstrSeq) {
         let seq_builder_id = self.get_or_create_iseq_id(&instr_seq.id());
         let seq_builder = self.builder.instr_seq(seq_builder_id);
-        self.iseq_stack.push((seq_builder.id(), 0));
+        self.iseq_stack.push((instr_seq.id(), 0));
     }
 
     fn end_instr_seq(&mut self, _: &'instr walrus::ir::InstrSeq) {
@@ -265,15 +307,15 @@ impl<'instr> Visitor<'instr> for Cloner<'_, '_> {
     }
 
     fn visit_instr(&mut self, instr: &'instr Instr, _: &'instr InstrLocId) {
-        let (seq_id, current_pos) = {
-            let (seq_id, pos_mut) = self.current_seq_id_and_pos_mut();
+        let (original_seq_id, current_pos) = {
+            let (original_seq_id, pos_mut) = self.current_seq_id_and_pos_mut();
             let current_pos = *pos_mut;
             let new_pos = current_pos + 1;
             *pos_mut = new_pos;
-            (*seq_id, current_pos)
+            (*original_seq_id, current_pos)
         };
 
-        let new_instr = match (instr, self.params.find(seq_id, current_pos)) {
+        let new_instr = match (instr, self.params.find(original_seq_id, current_pos)) {
             (Instr::Const(_), Some((param_idx, _))) => {
                 let arg = self.extra_args[param_idx];
                 Instr::LocalGet(LocalGet { local: arg })
@@ -327,12 +369,11 @@ impl<'instr> Visitor<'instr> for Cloner<'_, '_> {
 }
 
 fn create_merged_func(
-    head_func: &walrus::Function,
+    head_func: FunctionId,
     params: &ParamInfos,
     module: &mut walrus::Module,
 ) -> walrus::FunctionId {
-    let original = head_func.kind.unwrap_local();
-    Cloner::clone(original, params, module)
+    Cloner::clone(head_func, params, module)
 }
 
 fn create_thunk_func(
@@ -360,8 +401,8 @@ struct ParamInfo {
     uses: Vec<InstrLocInfo>,
 }
 
-fn derive_params<'func>(class: &EquivalenceClass<'func>) -> Option<Vec<ParamInfo>> {
-    let head_func = match &class.head_func.kind {
+fn derive_params(class: &EquivalenceClass, module: &walrus::Module) -> Option<ParamInfos> {
+    let head_func = match &class.head_func(module).kind {
         walrus::FunctionKind::Local(head_func) => head_func,
         _ => return None,
     };
@@ -369,6 +410,7 @@ fn derive_params<'func>(class: &EquivalenceClass<'func>) -> Option<Vec<ParamInfo
     let mut sibling_iters = vec![];
 
     for func in class.funcs.iter() {
+        let func = module.funcs.get(*func);
         let func = match &func.kind {
             walrus::FunctionKind::Local(func) => func,
             _ => return None,
@@ -407,7 +449,7 @@ fn derive_params<'func>(class: &EquivalenceClass<'func>) -> Option<Vec<ParamInfo
             }
         }
     }
-    Some(params)
+    Some(ParamInfos(params))
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -912,11 +954,14 @@ fn dfs_pre_order_iter<'instr>(
 
 #[cfg(test)]
 mod tests {
-    use walrus::{FunctionBuilder, ValType};
+    use std::collections::HashSet;
 
-    use crate::merge::const_param::{are_in_equivalence_class, FunctionHash};
+    use walrus::{FunctionBuilder, ValType, ir::Instr};
 
-    use super::EquivalenceClass;
+    use crate::merge::const_param::{
+        are_in_equivalence_class, collect_equivalence_class, create_merged_func, derive_params,
+        EquivalenceClass, FunctionHash,
+    };
 
     fn create_func_hash(builder: FunctionBuilder, module: &mut walrus::Module) -> FunctionHash {
         let f = builder.finish(vec![], &mut module.funcs);
@@ -980,5 +1025,117 @@ mod tests {
             module.funcs.get(f3_id),
             &module
         ));
+    }
+
+    #[test]
+    fn test_collect_equivalence_class() {
+        let mut module = walrus::Module::default();
+        let mut f1_builder = FunctionBuilder::new(&mut module.types, &[], &[]);
+        f1_builder.func_body().i32_const(42).drop();
+        let f1_id = f1_builder.finish(vec![], &mut module.funcs);
+
+        let mut f2_builder = FunctionBuilder::new(&mut module.types, &[], &[]);
+        f2_builder.func_body().i32_const(43).drop();
+        let f2_id = f2_builder.finish(vec![], &mut module.funcs);
+
+        let classes = collect_equivalence_class(&module);
+        assert_eq!(classes.len(), 1);
+
+        let class = classes.get(0).unwrap();
+        let mut func_ids: HashSet<_> = class.funcs.iter().collect();
+        func_ids.insert(&class.head_func);
+
+        assert_eq!(func_ids, vec![f1_id, f2_id].iter().collect());
+    }
+
+    #[test]
+    fn test_derive_params() {
+        let mut module = walrus::Module::default();
+        let mut f1_builder = FunctionBuilder::new(&mut module.types, &[], &[]);
+        f1_builder.func_body().i32_const(42).drop();
+        f1_builder.finish(vec![], &mut module.funcs);
+
+        let mut f2_builder = FunctionBuilder::new(&mut module.types, &[], &[]);
+        f2_builder.func_body().i32_const(43).drop();
+        f2_builder.finish(vec![], &mut module.funcs);
+
+        let classes = collect_equivalence_class(&module);
+        let class = classes.get(0).unwrap();
+
+        let params = derive_params(class, &module).unwrap();
+        assert_eq!(params.len(), 1);
+        let param = params.get(0).unwrap();
+        assert_eq!(param.uses.len(), 1);
+        let param_use = param.uses.get(0).unwrap();
+        assert_eq!(param_use.position, 0);
+        assert_eq!(
+            param_use.seq_id,
+            class.head_func(&module).kind.unwrap_local().entry_block()
+        );
+    }
+
+    #[test]
+    fn test_derive_params_duplicated() {
+        let mut module = walrus::Module::default();
+        let mut f1_builder = FunctionBuilder::new(&mut module.types, &[], &[]);
+        f1_builder
+            .func_body()
+            .i32_const(42)
+            .drop()
+            .i32_const(42)
+            .drop();
+        f1_builder.finish(vec![], &mut module.funcs);
+
+        let mut f2_builder = FunctionBuilder::new(&mut module.types, &[], &[]);
+        f2_builder
+            .func_body()
+            .i32_const(43)
+            .drop()
+            .i32_const(43)
+            .drop();
+        f2_builder.finish(vec![], &mut module.funcs);
+
+        let classes = collect_equivalence_class(&module);
+        let class = classes.get(0).unwrap();
+
+        let params = derive_params(class, &module).unwrap();
+        assert_eq!(params.len(), 1);
+        let param = params.get(0).unwrap();
+        assert_eq!(param.uses.len(), 2);
+        let param_positions: Vec<_> = param.uses.iter().map(|u| u.position).collect();
+        assert_eq!(param_positions, vec![0, 2]);
+    }
+
+    #[test]
+    fn test_func_cloner() {
+        let mut module = walrus::Module::default();
+        let mut f1_builder = FunctionBuilder::new(&mut module.types, &[], &[]);
+        f1_builder.func_body().i32_const(42).drop();
+        f1_builder.finish(vec![], &mut module.funcs);
+
+        let mut f2_builder = FunctionBuilder::new(&mut module.types, &[], &[]);
+        f2_builder.func_body().i32_const(43).drop();
+        f2_builder.finish(vec![], &mut module.funcs);
+
+        let classes = collect_equivalence_class(&module);
+        let class = classes.get(0).unwrap();
+
+        let params = derive_params(class, &module).unwrap();
+        let merged = create_merged_func(class.head_func, &params, &mut module);
+
+        let merged = module.funcs.get(merged);
+        let merged_params = module.types.params(merged.ty());
+        assert_eq!(merged_params, &[ValType::I32]);
+
+        let merged = merged.kind.unwrap_local();
+        let instrs = merged.block(merged.entry_block());
+        assert_eq!(instrs.len(), 2);
+        let (replaced_instr, _) = instrs.get(0).unwrap();
+
+        if let Instr::LocalGet(local_get) = replaced_instr {
+            assert_eq!(&local_get.local, merged.args.get(0).unwrap());
+        } else {
+            panic!("expected local.get but got {:?}", replaced_instr);
+        }
     }
 }
