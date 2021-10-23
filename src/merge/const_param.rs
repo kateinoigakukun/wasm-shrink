@@ -6,10 +6,13 @@ use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 
 use walrus::ir::{
-    Br, BrIf, Const, GlobalGet, GlobalSet, IfElse, Instr, InstrSeqId, LocalGet, LocalSet, LocalTee,
-    MemoryGrow, MemorySize, TableFill, TableGet, TableGrow, TableSet, TableSize, Value,
+    Block, Br, BrIf, BrTable, Const, GlobalGet, GlobalSet, IfElse, Instr, InstrSeqId, LocalGet,
+    LocalSet, LocalTee, Loop, MemoryGrow, MemorySize, TableFill, TableGet, TableGrow, TableSet,
+    TableSize, Value, Visitor,
 };
-use walrus::{FunctionBuilder, FunctionId, InstrLocId, LocalFunction, LocalId};
+use walrus::{
+    FunctionBuilder, FunctionId, InstrLocId, InstrSeqBuilder, LocalFunction, LocalId, ValType,
+};
 
 use super::func_hash;
 
@@ -128,16 +131,16 @@ pub fn merge_funcs(module: &mut walrus::Module) {
 }
 
 #[allow(unused)]
-fn try_merge_equivalence_class(class: &EquivalenceClass) {
+fn try_merge_equivalence_class(class: &EquivalenceClass, module: &mut walrus::Module) {
     let params = match derive_params(class) {
-        Some(params) => params,
+        Some(params) => ParamInfos(params),
         None => {
             log::warn!("derive_params returns None unexpectedly for {:?}", class);
             return;
         }
     };
 
-    let merged_func = create_merged_func(class.head_func, &params);
+    let merged_func = create_merged_func(class.head_func, &params, module);
 
     let mut thunks = vec![create_thunk_func(class.head_func, todo!(), &params, 0)];
 
@@ -148,11 +151,188 @@ fn try_merge_equivalence_class(class: &EquivalenceClass) {
     // Replace all calls to `class.head_func` and `class.funcs` with thunks
 }
 
+struct ParamInfos(Vec<ParamInfo>);
+
+impl Deref for ParamInfos {
+    type Target = Vec<ParamInfo>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl ParamInfos {
+    fn find(&self, seq_id: InstrSeqId, position: usize) -> Option<(usize, &ParamInfo)> {
+        for (pos, param) in self.0.iter().enumerate() {
+            for param_use in &param.uses {
+                if param_use.seq_id == seq_id && param_use.position == position {
+                    return Some((pos, param));
+                }
+            }
+        }
+        None
+    }
+}
+
+struct Cloner<'a, 'b> {
+    original: &'b walrus::LocalFunction,
+    builder: FunctionBuilder,
+    iseq_stack: Vec<(InstrSeqId, usize)>,
+    /// `original` to `new` iseq id map
+    iseq_map: HashMap<InstrSeqId, InstrSeqId>,
+
+    params: &'a ParamInfos,
+    /// The order should be matched with `params`
+    extra_args: Vec<LocalId>,
+}
+
+impl<'a, 'b> Cloner<'a, 'b> {
+    fn clone(
+        original: &'b walrus::LocalFunction,
+        params: &'a ParamInfos,
+        module: &mut walrus::Module,
+    ) -> FunctionId {
+        let (param_types, result_types) = module.types.params_results(original.ty());
+
+        let result_types = result_types.to_vec();
+        let mut param_types: Vec<ValType> = param_types.to_vec();
+        let extra_params_types = params
+            .iter()
+            .map(|param| param.values.val_type())
+            .collect::<Vec<_>>();
+        param_types.append(&mut extra_params_types.clone());
+
+        let builder = FunctionBuilder::new(&mut module.types, &param_types, &result_types);
+
+        let extra_args = extra_params_types
+            .iter()
+            .map(|ty| module.locals.add(*ty))
+            .collect::<Vec<_>>();
+
+        let mut cloner = Cloner {
+            original,
+            builder,
+            iseq_stack: vec![],
+            iseq_map: HashMap::new(),
+            params,
+            extra_args,
+        };
+        walrus::ir::dfs_in_order(&mut cloner, original, original.entry_block());
+        let (builder, mut extra_args) = cloner.take();
+
+        let mut new_args = original.args.clone();
+        new_args.append(&mut extra_args);
+        builder.finish(new_args, &mut module.funcs)
+    }
+
+    fn current_seq_id_and_pos(&self) -> &(InstrSeqId, usize) {
+        self.iseq_stack.last().unwrap()
+    }
+
+    fn current_seq_id_and_pos_mut(&mut self) -> &mut (InstrSeqId, usize) {
+        self.iseq_stack.last_mut().unwrap()
+    }
+
+    fn current_seq(&mut self) -> InstrSeqBuilder {
+        self.builder.instr_seq(self.current_seq_id_and_pos().0)
+    }
+
+    fn get_or_create_iseq_id(&mut self, original_iseq_id: &InstrSeqId) -> InstrSeqId {
+        match self.iseq_map.get(original_iseq_id) {
+            Some(new_iseq_id) => *new_iseq_id,
+            None => {
+                let iseq = self.original.block(*original_iseq_id);
+                let iseq_builder = self.builder.dangling_instr_seq(iseq.ty);
+                self.iseq_map.insert(*original_iseq_id, iseq_builder.id());
+                iseq_builder.id()
+            }
+        }
+    }
+
+    fn take(self) -> (FunctionBuilder, Vec<LocalId>) {
+        (self.builder, self.extra_args)
+    }
+}
+
+impl<'instr> Visitor<'instr> for Cloner<'_, '_> {
+    fn start_instr_seq(&mut self, instr_seq: &'instr walrus::ir::InstrSeq) {
+        let seq_builder_id = self.get_or_create_iseq_id(&instr_seq.id());
+        let seq_builder = self.builder.instr_seq(seq_builder_id);
+        self.iseq_stack.push((seq_builder.id(), 0));
+    }
+
+    fn end_instr_seq(&mut self, _: &'instr walrus::ir::InstrSeq) {
+        self.iseq_stack.pop();
+    }
+
+    fn visit_instr(&mut self, instr: &'instr Instr, _: &'instr InstrLocId) {
+        let (seq_id, current_pos) = {
+            let (seq_id, pos_mut) = self.current_seq_id_and_pos_mut();
+            let current_pos = *pos_mut;
+            let new_pos = current_pos + 1;
+            *pos_mut = new_pos;
+            (*seq_id, current_pos)
+        };
+
+        let new_instr = match (instr, self.params.find(seq_id, current_pos)) {
+            (Instr::Const(_), Some((param_idx, _))) => {
+                let arg = self.extra_args[param_idx];
+                Instr::LocalGet(LocalGet { local: arg })
+            }
+            (_, Some(param)) => unimplemented!("unhandled param {:?}", param),
+            (instr, None) => match instr {
+                Instr::Block(Block { seq }) => {
+                    let new_seq_id = self.get_or_create_iseq_id(seq);
+                    Instr::Block(Block { seq: new_seq_id })
+                }
+                Instr::Loop(Loop { seq }) => {
+                    let new_seq_id = self.get_or_create_iseq_id(seq);
+                    Instr::Loop(Loop { seq: new_seq_id })
+                }
+                Instr::Br(Br { block }) => {
+                    let new_seq_id = self.get_or_create_iseq_id(block);
+                    Instr::Br(Br { block: new_seq_id })
+                }
+                Instr::BrIf(BrIf { block }) => {
+                    let new_seq_id = self.get_or_create_iseq_id(block);
+                    Instr::BrIf(BrIf { block: new_seq_id })
+                }
+                Instr::IfElse(IfElse {
+                    consequent,
+                    alternative,
+                }) => {
+                    let new_consequent = self.get_or_create_iseq_id(consequent);
+                    let new_alternative = self.get_or_create_iseq_id(alternative);
+                    Instr::IfElse(IfElse {
+                        consequent: new_consequent,
+                        alternative: new_alternative,
+                    })
+                }
+                Instr::BrTable(BrTable { blocks, default }) => {
+                    let new_blocks = blocks
+                        .into_iter()
+                        .map(|block| self.get_or_create_iseq_id(block))
+                        .collect::<Box<[_]>>();
+                    let new_default = self.get_or_create_iseq_id(default);
+                    Instr::BrTable(BrTable {
+                        blocks: new_blocks,
+                        default: new_default,
+                    })
+                }
+                other => other.clone(),
+            },
+        };
+
+        self.current_seq().instr(new_instr.clone());
+    }
+}
+
 fn create_merged_func(
     head_func: &walrus::Function,
-    params: &[ParamInfo],
-) -> walrus::FunctionBuilder {
-    unimplemented!()
+    params: &ParamInfos,
+    module: &mut walrus::Module,
+) -> walrus::FunctionId {
+    let original = head_func.kind.unwrap_local();
+    Cloner::clone(original, params, module)
 }
 
 fn create_thunk_func(
@@ -173,10 +353,11 @@ fn create_thunk_func(
     unimplemented!()
 }
 
+#[derive(Debug)]
 struct ParamInfo {
     /// const values ordered by the EquivalenceClass's `[head_func] + funcs`
     values: ConstDiff,
-    uses: Vec<InstrLocId>,
+    uses: Vec<InstrLocInfo>,
 }
 
 fn derive_params<'func>(class: &EquivalenceClass<'func>) -> Option<Vec<ParamInfo>> {
@@ -213,7 +394,7 @@ fn derive_params<'func>(class: &EquivalenceClass<'func>) -> Option<Vec<ParamInfo
             let mut found = false;
             for param in &mut params {
                 if &param.values == &diff {
-                    param.uses.push(*loc);
+                    param.uses.push(loc);
                     found = true;
                     break;
                 }
@@ -221,7 +402,7 @@ fn derive_params<'func>(class: &EquivalenceClass<'func>) -> Option<Vec<ParamInfo
             if !found {
                 params.push(ParamInfo {
                     values: diff,
-                    uses: vec![*loc],
+                    uses: vec![loc],
                 });
             }
         }
@@ -229,12 +410,23 @@ fn derive_params<'func>(class: &EquivalenceClass<'func>) -> Option<Vec<ParamInfo
     Some(params)
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 enum ConstDiff {
     ConstI32(Vec<i32>),
     ConstI64(Vec<i64>),
     ConstF32(Vec<u32>),
     ConstF64(Vec<u64>),
+}
+
+impl ConstDiff {
+    fn val_type(&self) -> ValType {
+        match self {
+            ConstDiff::ConstI32(_) => ValType::I32,
+            ConstDiff::ConstI64(_) => ValType::I64,
+            ConstDiff::ConstF32(_) => ValType::F32,
+            ConstDiff::ConstF64(_) => ValType::F64,
+        }
+    }
 }
 
 fn consts_diff(base: &Instr, siblings: Vec<&Instr>) -> Option<ConstDiff> {
@@ -638,25 +830,36 @@ fn values_have_same_type(lhs: Value, rhs: Value) -> bool {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct InstrLocInfo {
+    seq_id: InstrSeqId,
+    loc_id: InstrLocId,
+    position: usize,
+}
+
 fn dfs_pre_order_iter<'instr>(
     func: &'instr LocalFunction,
     start: InstrSeqId,
-) -> impl Iterator<Item = (&'instr Instr, &'instr InstrLocId)> {
+) -> impl Iterator<Item = (&'instr Instr, InstrLocInfo)> {
     use walrus::ir::{Block, Loop};
+
+    type InstrIter<'instr> = std::iter::Enumerate<std::slice::Iter<'instr, (Instr, InstrLocId)>>;
+
     struct Iter<'instr> {
         func: &'instr LocalFunction,
         seq_stack: Vec<InstrSeqId>,
-        current_seq: Option<std::slice::Iter<'instr, (Instr, InstrLocId)>>,
+        current_seq: Option<(InstrIter<'instr>, InstrSeqId)>,
     }
     impl<'instr> Iterator for Iter<'instr> {
-        type Item = (&'instr Instr, &'instr InstrLocId);
+        type Item = (&'instr Instr, InstrLocInfo);
         fn next(&mut self) -> Option<Self::Item> {
-            fn next<'a>(
-                seq: &mut std::slice::Iter<'a, (Instr, InstrLocId)>,
+            fn next_from_seq<'a>(
+                seq: &mut InstrIter<'a>,
+                seq_id: InstrSeqId,
                 seq_stack: &mut Vec<InstrSeqId>,
-            ) -> Option<(&'a Instr, &'a InstrLocId)> {
+            ) -> Option<(&'a Instr, InstrLocInfo)> {
                 let instr = match seq.next() {
-                    Some((instr, loc)) => {
+                    Some((position, (instr, loc))) => {
                         let instr = match instr {
                             Instr::Block(Block { seq }) | Instr::Loop(Loop { seq }) => {
                                 seq_stack.push(*seq);
@@ -672,22 +875,29 @@ fn dfs_pre_order_iter<'instr>(
                             }
                             other => other,
                         };
-                        (instr, loc)
+                        (
+                            instr,
+                            InstrLocInfo {
+                                seq_id,
+                                loc_id: *loc,
+                                position,
+                            },
+                        )
                     }
                     None => return None,
                 };
                 Some(instr)
             }
             match self.current_seq.as_mut() {
-                Some(seq) => next(seq, &mut self.seq_stack),
+                Some((seq, seq_id)) => next_from_seq(seq, *seq_id, &mut self.seq_stack),
                 None => {
                     let seq_id = match self.seq_stack.pop() {
                         Some(seq_id) => seq_id,
                         None => return None,
                     };
-                    let mut seq = self.func.block(seq_id).iter();
-                    let instr = next(&mut seq, &mut self.seq_stack);
-                    self.current_seq.replace(seq);
+                    let mut seq = self.func.block(seq_id).iter().enumerate();
+                    let instr = next_from_seq(&mut seq, seq_id, &mut self.seq_stack);
+                    self.current_seq.replace((seq, seq_id));
                     instr
                 }
             }
@@ -705,6 +915,8 @@ mod tests {
     use walrus::{FunctionBuilder, ValType};
 
     use crate::merge::const_param::{are_in_equivalence_class, FunctionHash};
+
+    use super::EquivalenceClass;
 
     fn create_func_hash(builder: FunctionBuilder, module: &mut walrus::Module) -> FunctionHash {
         let f = builder.finish(vec![], &mut module.funcs);
