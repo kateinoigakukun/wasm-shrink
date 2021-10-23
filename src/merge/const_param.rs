@@ -50,7 +50,7 @@ impl EquivalenceClass {
     }
     fn is_eligible_to_merge(&self) -> bool {
         // ensure that this class has two funcs
-        !self.funcs.is_empty()
+        self.funcs.len() >= 2
     }
 }
 
@@ -64,13 +64,14 @@ pub fn merge_funcs(module: &mut walrus::Module) {
             continue;
         }
         log::debug!(
-            "EC: head={}",
+            "EC: head={}, hash={:?}",
             class
                 .head_func(&module)
                 .name
                 .as_ref()
                 .map(String::as_str)
-                .unwrap_or("unknown")
+                .unwrap_or("unknown"),
+            class.hash
         );
         for fn_id in class.funcs.iter().skip(1) {
             let fn_entry = module.funcs.get(*fn_id);
@@ -123,6 +124,7 @@ fn collect_equivalence_class(module: &walrus::Module) -> Vec<EquivalenceClass> {
                 if are_in_equivalence_class(class.head_func(module), f, &module) {
                     class.funcs.push(f.id());
                     found = true;
+                    break;
                 }
             }
 
@@ -1232,8 +1234,7 @@ mod tests {
         assert_eq!(instr.unwrap_const().value, Value::I32(42));
     }
 
-    #[test]
-    fn test_merge_simple() {
+    fn check_no_crash(file: &str) {
         let fixture = PathBuf::from(file!())
             .parent()
             .unwrap()
@@ -1242,10 +1243,25 @@ mod tests {
             .parent()
             .unwrap()
             .join("tracker/fixture");
-        let source = fixture.join("simple.wasm");
-        let result = fixture.join("simple.wasm.opt");
+        let source = fixture.join(file);
+        let result = fixture.join(format!("{}.opt", file));
         let mut module = walrus::Module::from_file(source).unwrap();
         const_param::merge_funcs(&mut module);
         module.emit_wasm_file(result).unwrap();
+    }
+
+    #[test]
+    fn test_merge_simple() {
+        check_no_crash("simple.wasm")
+    }
+
+    #[test]
+    fn test_merge_large_complex() {
+        check_no_crash("swift-hello.wasm")
+    }
+
+    #[test]
+    fn test_merge_0() {
+        check_no_crash("0.wasm")
     }
 }

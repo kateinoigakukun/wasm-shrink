@@ -20,13 +20,7 @@ pub fn replace_funcs(
 ) {
     for (_, func) in module.funcs.iter_local_mut() {
         let entry = func.entry_block();
-        walrus::ir::dfs_pre_order_mut(
-            &mut Replacer {
-                replacing_map: map,
-            },
-            func,
-            entry,
-        );
+        walrus::ir::dfs_pre_order_mut(&mut Replacer { replacing_map: map }, func, entry);
     }
 
     for (from, _) in map.iter() {

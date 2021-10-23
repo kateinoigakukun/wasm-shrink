@@ -1,4 +1,4 @@
-ALL = simple.wasm
+ALL = simple.wasm 0.wasm
 
 all: $(ALL)
 %.wasm: %.wat
