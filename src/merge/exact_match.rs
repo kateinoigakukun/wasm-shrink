@@ -1,6 +1,8 @@
 use std::{collections::HashMap, hash::Hash};
 use walrus::ir::{Visitor, VisitorMut};
 
+use crate::merge::replace;
+
 struct HashInstr(String);
 
 impl HashInstr {
@@ -72,32 +74,5 @@ pub fn merge_funcs(module: &mut walrus::Module) {
     let mergable_funcs = replacing_map.len();
     log::debug!("mergable_funcs = {}", mergable_funcs);
 
-    for (_, func) in module.funcs.iter_local_mut() {
-        let entry = func.entry_block();
-        walrus::ir::dfs_pre_order_mut(
-            &mut Replacer {
-                replacing_map: &replacing_map,
-            },
-            func,
-            entry,
-        );
-    }
-
-    for (from, _) in replacing_map.iter() {
-        module.funcs.delete(*from);
-    }
-
-    for element in module.elements.iter_mut() {
-        for (i, member) in element.members.clone().iter().enumerate() {
-            let member = match member {
-                Some(member) => member,
-                None => continue,
-            };
-            let to_func_id = match replacing_map.get(member) {
-                Some(func_id) => func_id,
-                None => continue,
-            };
-            element.members[i] = Some(*to_func_id);
-        }
-    }
+    replace::replace_funcs(&replacing_map, module);
 }

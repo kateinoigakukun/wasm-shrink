@@ -13,7 +13,7 @@ use walrus::{
     FunctionBuilder, FunctionId, InstrLocId, InstrSeqBuilder, LocalFunction, LocalId, ValType,
 };
 
-use super::func_hash;
+use super::{func_hash, replace};
 
 #[derive(PartialEq, Eq, Debug, Hash, Clone, Copy)]
 struct FunctionHash(u64);
@@ -139,7 +139,6 @@ fn collect_equivalence_class(module: &walrus::Module) -> Vec<EquivalenceClass> {
     fn_classes
 }
 
-#[allow(unused)]
 fn try_merge_equivalence_class(class: &EquivalenceClass, module: &mut walrus::Module) {
     let params = match derive_params(class, module) {
         Some(params) => params,
@@ -160,27 +159,33 @@ fn try_merge_equivalence_class(class: &EquivalenceClass, module: &mut walrus::Mo
         .map(|param| param.values)
         .collect::<Vec<_>>();
 
-    let mut thunks = vec![create_thunk_func(
+    let mut thunk_map = HashMap::new();
+
+    let head_thunk = create_thunk_func(
         &original_param_tys,
         &original_result_tys,
         merged_func,
         &params,
         0,
         module,
-    )];
+    );
+    thunk_map.insert(class.head_func, head_thunk);
 
     for (idx, from) in class.funcs.iter().enumerate() {
-        thunks.push(create_thunk_func(
-            &original_param_tys,
-            &original_result_tys,
-            merged_func,
-            &params,
-            idx + 1,
-            module,
-        ))
+        thunk_map.insert(
+            *from,
+            create_thunk_func(
+                &original_param_tys,
+                &original_result_tys,
+                merged_func,
+                &params,
+                idx + 1,
+                module,
+            ),
+        );
     }
 
-    // Replace all calls to `class.head_func` and `class.funcs` with thunks
+    replace::replace_funcs(&thunk_map, module);
 }
 
 struct ParamInfos(Vec<ParamInfo>);
