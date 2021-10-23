@@ -38,15 +38,15 @@ impl FunctionHash {
 
 #[derive(Debug)]
 struct EquivalenceClass {
-    head_func: FunctionId,
+    primary_func: FunctionId,
     /// List of functions belonging to a same class
     funcs: Vec<FunctionId>,
     hash: FunctionHash,
 }
 
 impl EquivalenceClass {
-    fn head_func<'module>(&self, module: &'module walrus::Module) -> &'module walrus::Function {
-        module.funcs.get(self.head_func)
+    fn primary_func<'module>(&self, module: &'module walrus::Module) -> &'module walrus::Function {
+        module.funcs.get(self.primary_func)
     }
     fn is_eligible_to_merge(&self) -> bool {
         // ensure that this class has two funcs
@@ -64,9 +64,9 @@ pub fn merge_funcs(module: &mut walrus::Module) {
             continue;
         }
         log::debug!(
-            "EC: head={}, hash={:?}",
+            "EC: primary={}, hash={:?}",
             class
-                .head_func(&module)
+                .primary_func(&module)
                 .name
                 .as_ref()
                 .map(String::as_str)
@@ -113,7 +113,7 @@ fn collect_equivalence_class(module: &walrus::Module) -> Vec<EquivalenceClass> {
             continue;
         }
         let mut classes: Vec<EquivalenceClass> = vec![EquivalenceClass {
-            head_func: group[0].id(),
+            primary_func: group[0].id(),
             funcs: vec![],
             hash: key,
         }];
@@ -121,7 +121,7 @@ fn collect_equivalence_class(module: &walrus::Module) -> Vec<EquivalenceClass> {
         for f in group {
             let mut found = false;
             for class in classes.iter_mut() {
-                if are_in_equivalence_class(class.head_func(module), f, &module) {
+                if are_in_equivalence_class(class.primary_func(module), f, &module) {
                     class.funcs.push(f.id());
                     found = true;
                     break;
@@ -130,7 +130,7 @@ fn collect_equivalence_class(module: &walrus::Module) -> Vec<EquivalenceClass> {
 
             if !found {
                 classes.push(EquivalenceClass {
-                    head_func: f.id(),
+                    primary_func: f.id(),
                     funcs: vec![],
                     hash: key,
                 })
@@ -151,10 +151,10 @@ fn try_merge_equivalence_class(class: &EquivalenceClass, module: &mut walrus::Mo
     };
 
     let (original_param_tys, original_result_tys) = {
-        let (params, results) = module.types.params_results(class.head_func(module).ty());
+        let (params, results) = module.types.params_results(class.primary_func(module).ty());
         (params.to_vec(), results.to_vec())
     };
-    let merged_func = create_merged_func(class.head_func, &params, module);
+    let merged_func = create_merged_func(class.primary_func, &params, module);
     let params = params
         .0
         .into_iter()
@@ -399,11 +399,11 @@ impl<'instr> Visitor<'instr> for Cloner<'_> {
 }
 
 fn create_merged_func(
-    head_func: FunctionId,
+    primary_func: FunctionId,
     params: &ParamInfos,
     module: &mut walrus::Module,
 ) -> walrus::FunctionId {
-    Cloner::clone(head_func, params, module)
+    Cloner::clone(primary_func, params, module)
 }
 
 fn create_thunk_func(
@@ -458,20 +458,20 @@ fn create_thunk_func(
 
 #[derive(Debug)]
 struct ParamInfo {
-    /// const values ordered by the EquivalenceClass's `[head_func] + funcs`
+    /// const values ordered by the EquivalenceClass's `[primary_func] + funcs`
     values: ConstDiff,
     uses: Vec<InstrLocInfo>,
 }
 
 fn derive_params(class: &EquivalenceClass, module: &walrus::Module) -> Option<ParamInfos> {
-    let head_func = match &class.head_func(module).kind {
-        walrus::FunctionKind::Local(head_func) => head_func,
+    let primary_func = match &class.primary_func(module).kind {
+        walrus::FunctionKind::Local(primary_func) => primary_func,
         _ => return None,
     };
-    let mut head_iter = dfs_pre_order_iter(&head_func, head_func.entry_block());
+    let mut primary_iter = dfs_pre_order_iter(&primary_func, primary_func.entry_block());
     let mut sibling_iters = vec![];
 
-    // skip head func
+    // skip first primary func
     for func in class.funcs.iter().skip(1) {
         let func = module.funcs.get(*func);
         let func = match &func.kind {
@@ -484,13 +484,13 @@ fn derive_params(class: &EquivalenceClass, module: &walrus::Module) -> Option<Pa
 
     let mut params: Vec<ParamInfo> = vec![];
 
-    while let Some((base_instr, loc)) = head_iter.next() {
+    while let Some((primary_instr, loc)) = primary_iter.next() {
         let siblings = sibling_iters
             .iter_mut()
             .map(|iter| iter.next())
             .collect::<Option<Vec<&Instr>>>()?;
 
-        let diff = match consts_diff(base_instr, siblings) {
+        let diff = match consts_diff(primary_instr, siblings) {
             Some(diff) => diff,
             None => continue,
         };
@@ -534,13 +534,13 @@ impl ConstDiff {
     }
 }
 
-fn consts_diff(base: &Instr, siblings: Vec<&Instr>) -> Option<ConstDiff> {
-    let base_value = match base {
+fn consts_diff(primary: &Instr, siblings: Vec<&Instr>) -> Option<ConstDiff> {
+    let primary_value = match primary {
         Instr::Const(Const { value }) => value,
         _ => return None,
     };
 
-    let mut diff = match base_value {
+    let mut diff = match primary_value {
         Value::I32(v) => ConstDiff::ConstI32(vec![*v]),
         Value::I64(v) => ConstDiff::ConstI64(vec![*v]),
         Value::F32(v) => ConstDiff::ConstF32(vec![*v]),
@@ -1101,7 +1101,7 @@ mod tests {
 
         let class = classes.get(0).unwrap();
         let mut func_ids: HashSet<_> = class.funcs.iter().collect();
-        func_ids.insert(&class.head_func);
+        func_ids.insert(&class.primary_func);
 
         assert_eq!(func_ids, vec![f1_id, f2_id].iter().collect());
     }
@@ -1128,7 +1128,7 @@ mod tests {
         assert_eq!(param_use.position, 0);
         assert_eq!(
             param_use.seq_id,
-            class.head_func(&module).kind.unwrap_local().entry_block()
+            class.primary_func(&module).kind.unwrap_local().entry_block()
         );
     }
 
@@ -1179,7 +1179,7 @@ mod tests {
         let class = classes.get(0).unwrap();
 
         let params = derive_params(class, &module).unwrap();
-        let merged = create_merged_func(class.head_func, &params, &mut module);
+        let merged = create_merged_func(class.primary_func, &params, &mut module);
 
         let merged = module.funcs.get(merged);
         let merged_params = module.types.params(merged.ty());
