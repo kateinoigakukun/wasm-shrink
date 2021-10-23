@@ -191,8 +191,8 @@ impl ParamInfos {
 struct Cloner<'a> {
     iseq_type_map: HashMap<InstrSeqId, InstrSeqType>,
     builder: FunctionBuilder,
-    /// `(original_iseq_id, position)`
-    iseq_stack: Vec<(InstrSeqId, usize)>,
+    /// `(original_iseq_id, new_iseq_id, position)`
+    iseq_stack: Vec<(InstrSeqId, InstrSeqId, usize)>,
     /// `original` to `new` iseq id map
     iseq_map: HashMap<InstrSeqId, InstrSeqId>,
 
@@ -264,18 +264,17 @@ impl<'a> Cloner<'a> {
         builder.finish(new_args, &mut module.funcs)
     }
 
-    fn current_seq_id_and_pos(&self) -> &(InstrSeqId, usize) {
+    fn current_seq_id_and_pos(&self) -> &(InstrSeqId, InstrSeqId, usize) {
         self.iseq_stack.last().unwrap()
     }
 
-    fn current_seq_id_and_pos_mut(&mut self) -> &mut (InstrSeqId, usize) {
+    fn current_seq_id_and_pos_mut(&mut self) -> &mut (InstrSeqId, InstrSeqId, usize) {
         self.iseq_stack.last_mut().unwrap()
     }
 
     fn current_seq(&mut self) -> InstrSeqBuilder {
-        let original_iseq_id = self.current_seq_id_and_pos().0;
-        let new_iseq_id = self.iseq_map.get(&original_iseq_id).unwrap();
-        self.builder.instr_seq(*new_iseq_id)
+        let new_iseq_id = self.current_seq_id_and_pos().1;
+        self.builder.instr_seq(new_iseq_id)
     }
 
     fn get_or_create_iseq_id(&mut self, original_iseq_id: &InstrSeqId) -> InstrSeqId {
@@ -298,8 +297,8 @@ impl<'a> Cloner<'a> {
 impl<'instr> Visitor<'instr> for Cloner<'_> {
     fn start_instr_seq(&mut self, instr_seq: &'instr walrus::ir::InstrSeq) {
         let seq_builder_id = self.get_or_create_iseq_id(&instr_seq.id());
-        let seq_builder = self.builder.instr_seq(seq_builder_id);
-        self.iseq_stack.push((instr_seq.id(), 0));
+        self.builder.instr_seq(seq_builder_id);
+        self.iseq_stack.push((instr_seq.id(), seq_builder_id, 0));
     }
 
     fn end_instr_seq(&mut self, _: &'instr walrus::ir::InstrSeq) {
@@ -308,7 +307,7 @@ impl<'instr> Visitor<'instr> for Cloner<'_> {
 
     fn visit_instr(&mut self, instr: &'instr Instr, _: &'instr InstrLocId) {
         let (original_seq_id, current_pos) = {
-            let (original_seq_id, pos_mut) = self.current_seq_id_and_pos_mut();
+            let (original_seq_id, _, pos_mut) = self.current_seq_id_and_pos_mut();
             let current_pos = *pos_mut;
             let new_pos = current_pos + 1;
             *pos_mut = new_pos;
@@ -883,8 +882,6 @@ fn dfs_pre_order_iter<'instr>(
     func: &'instr LocalFunction,
     start: InstrSeqId,
 ) -> impl Iterator<Item = (&'instr Instr, InstrLocInfo)> {
-    use walrus::ir::{Block, Loop};
-
     type InstrIter<'instr> = std::iter::Enumerate<std::slice::Iter<'instr, (Instr, InstrLocId)>>;
 
     struct Iter<'instr> {
@@ -956,7 +953,7 @@ fn dfs_pre_order_iter<'instr>(
 mod tests {
     use std::collections::HashSet;
 
-    use walrus::{FunctionBuilder, ValType, ir::Instr};
+    use walrus::{ir::Instr, FunctionBuilder, ValType};
 
     use crate::merge::const_param::{
         are_in_equivalence_class, collect_equivalence_class, create_merged_func, derive_params,
