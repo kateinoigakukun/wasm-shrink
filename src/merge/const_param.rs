@@ -469,7 +469,8 @@ fn derive_params(class: &EquivalenceClass, module: &walrus::Module) -> Option<Pa
     let mut head_iter = dfs_pre_order_iter(&head_func, head_func.entry_block());
     let mut sibling_iters = vec![];
 
-    for func in class.funcs.iter() {
+    // skip head func
+    for func in class.funcs.iter().skip(1) {
         let func = module.funcs.get(*func);
         let func = match &func.kind {
             walrus::FunctionKind::Local(func) => func,
