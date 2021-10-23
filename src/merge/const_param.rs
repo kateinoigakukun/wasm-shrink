@@ -52,6 +52,23 @@ impl EquivalenceClass {
         // ensure that this class has two funcs
         self.funcs.len() >= 2
     }
+
+    fn thunk_func_name(&self, original: Option<&str>) -> Option<String> {
+        match original {
+            Some(name) => Some(format!("{}$merge_thunk", name)),
+            None => None,
+        }
+    }
+
+    fn remangle_merged_func(&self, module: &walrus::Module) -> Option<String> {
+        for f in self.funcs.iter() {
+            let f = module.funcs.get(*f);
+            if let Some(name) = &f.name {
+                return Some(format!("{}$merge_shared", name));
+            }
+        }
+        None
+    }
 }
 
 pub fn merge_funcs(module: &mut walrus::Module) {
@@ -154,7 +171,13 @@ fn try_merge_equivalence_class(class: &EquivalenceClass, module: &mut walrus::Mo
         let (params, results) = module.types.params_results(class.primary_func(module).ty());
         (params.to_vec(), results.to_vec())
     };
-    let merged_func = create_merged_func(class.primary_func, &params, module);
+
+    let merged_func = create_merged_func(
+        class.remangle_merged_func(&module),
+        class.primary_func,
+        &params,
+        module,
+    );
     let params = params
         .0
         .into_iter()
@@ -164,11 +187,11 @@ fn try_merge_equivalence_class(class: &EquivalenceClass, module: &mut walrus::Mo
     let mut thunk_map = HashMap::new();
 
     for (idx, from) in class.funcs.iter().enumerate() {
-        let name = module.funcs.get(*from).name.as_ref();
+        let name = module.funcs.get(*from).name.as_ref().map(String::as_str);
         thunk_map.insert(
             *from,
             create_thunk_func(
-                name.map(|name| remangle_thunk_func(name)),
+                class.thunk_func_name(name),
                 &original_param_tys,
                 &original_result_tys,
                 merged_func,
@@ -180,14 +203,6 @@ fn try_merge_equivalence_class(class: &EquivalenceClass, module: &mut walrus::Mo
     }
 
     replace::replace_funcs(&thunk_map, module);
-}
-
-fn remangle_thunk_func(name: &String) -> String {
-    format!("{}$merge_thunk", name)
-}
-
-fn remangle_merged_func(name: &String) -> String {
-    format!("{}$merge_shared", name)
 }
 
 struct ParamInfos(Vec<ParamInfo>);
@@ -227,15 +242,12 @@ struct Cloner<'a> {
 
 impl<'a> Cloner<'a> {
     fn clone(
+        name: Option<String>,
         original: FunctionId,
         params: &'a ParamInfos,
         module: &mut walrus::Module,
     ) -> FunctionId {
         let original = module.funcs.get(original);
-        let name = original
-            .name
-            .as_ref()
-            .map(|name| remangle_merged_func(&name));
         let original = original.kind.unwrap_local();
 
         let iseq_type_map = {
@@ -399,11 +411,12 @@ impl<'instr> Visitor<'instr> for Cloner<'_> {
 }
 
 fn create_merged_func(
+    name: Option<String>,
     primary_func: FunctionId,
     params: &ParamInfos,
     module: &mut walrus::Module,
 ) -> walrus::FunctionId {
-    Cloner::clone(primary_func, params, module)
+    Cloner::clone(name, primary_func, params, module)
 }
 
 fn create_thunk_func(
@@ -1128,7 +1141,11 @@ mod tests {
         assert_eq!(param_use.position, 0);
         assert_eq!(
             param_use.seq_id,
-            class.primary_func(&module).kind.unwrap_local().entry_block()
+            class
+                .primary_func(&module)
+                .kind
+                .unwrap_local()
+                .entry_block()
         );
     }
 
@@ -1179,7 +1196,7 @@ mod tests {
         let class = classes.get(0).unwrap();
 
         let params = derive_params(class, &module).unwrap();
-        let merged = create_merged_func(class.primary_func, &params, &mut module);
+        let merged = create_merged_func(None, class.primary_func, &params, &mut module);
 
         let merged = module.funcs.get(merged);
         let merged_params = module.types.params(merged.ty());
