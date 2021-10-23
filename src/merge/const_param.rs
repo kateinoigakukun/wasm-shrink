@@ -1068,7 +1068,7 @@ mod tests {
     }
 
     #[test]
-    fn test_are_in_equivalence_class() {
+    fn test_are_in_equivalence_class_0() {
         let mut module = walrus::Module::default();
         let mut f1_builder = FunctionBuilder::new(&mut module.types, &[], &[]);
         f1_builder.func_body().i32_const(42).drop();
@@ -1084,6 +1084,14 @@ mod tests {
             &module
         ));
 
+    }
+    #[test]
+    fn test_are_in_equivalence_class_1() {
+        let mut module = walrus::Module::default();
+        let mut f2_builder = FunctionBuilder::new(&mut module.types, &[], &[]);
+        f2_builder.func_body().i32_const(43).drop();
+        let f2_id = f2_builder.finish(vec![], &mut module.funcs);
+
         let mut f3_builder = FunctionBuilder::new(&mut module.types, &[], &[]);
         f3_builder
             .func_body()
@@ -1095,6 +1103,28 @@ mod tests {
         assert!(!are_in_equivalence_class(
             module.funcs.get(f2_id),
             module.funcs.get(f3_id),
+            &module
+        ));
+    }
+
+    #[test]
+    #[ignore]
+    fn test_are_in_equivalence_class_2() {
+        let mut module = walrus::Module::default();
+        let mut f4_builder = FunctionBuilder::new(&mut module.types, &[ValType::I32, ValType::I32], &[ValType::I32]);
+        let arg0 = module.locals.add(ValType::I32);
+        let arg1 = module.locals.add(ValType::I32);
+        f4_builder.func_body().local_get(arg0);
+        let f4_id = f4_builder.finish(vec![arg0, arg1], &mut module.funcs);
+
+        let mut f5_builder = FunctionBuilder::new(&mut module.types, &[ValType::I32, ValType::I32], &[ValType::I32]);
+        let arg0 = module.locals.add(ValType::I32);
+        let arg1 = module.locals.add(ValType::I32);
+        f5_builder.func_body().local_get(arg1);
+        let f5_id = f5_builder.finish(vec![arg0, arg1], &mut module.funcs);
+        assert!(!are_in_equivalence_class(
+            module.funcs.get(f4_id),
+            module.funcs.get(f5_id),
             &module
         ));
     }
