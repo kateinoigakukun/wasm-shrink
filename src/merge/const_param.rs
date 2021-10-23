@@ -1,14 +1,15 @@
 //! Constant Parameterization
 
+use std::collections::btree_map::Values;
 use std::collections::{hash_map::DefaultHasher, HashMap};
 use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 
 use walrus::ir::{
-    Br, BrIf, GlobalGet, GlobalSet, IfElse, Instr, InstrSeqId, LocalGet, LocalSet, LocalTee,
+    Br, BrIf, Const, GlobalGet, GlobalSet, IfElse, Instr, InstrSeqId, LocalGet, LocalSet, LocalTee,
     MemoryGrow, MemorySize, TableFill, TableGet, TableGrow, TableSet, TableSize, Value,
 };
-use walrus::{InstrLocId, LocalFunction, LocalId};
+use walrus::{FunctionBuilder, FunctionId, InstrLocId, LocalFunction, LocalId};
 
 use super::func_hash;
 
@@ -33,6 +34,7 @@ impl FunctionHash {
     }
 }
 
+#[derive(Debug)]
 struct EquivalenceClass<'func> {
     head_func: &'func walrus::Function,
     /// List of functions belonging to a same class
@@ -125,6 +127,161 @@ pub fn merge_funcs(module: &mut walrus::Module) {
     log::debug!("mergable_funcs = {}", mergable_funcs);
 }
 
+#[allow(unused)]
+fn try_merge_equivalence_class(class: &EquivalenceClass) {
+    let params = match derive_params(class) {
+        Some(params) => params,
+        None => {
+            log::warn!("derive_params returns None unexpectedly for {:?}", class);
+            return;
+        }
+    };
+
+    let merged_func = create_merged_func(class.head_func, &params);
+
+    let mut thunks = vec![create_thunk_func(class.head_func, todo!(), &params, 0)];
+
+    for (idx, from) in class.funcs.iter().enumerate() {
+        thunks.push(create_thunk_func(from, todo!(), &params, idx + 1))
+    }
+
+    // Replace all calls to `class.head_func` and `class.funcs` with thunks
+}
+
+fn create_merged_func(
+    head_func: &walrus::Function,
+    params: &[ParamInfo],
+) -> walrus::FunctionBuilder {
+    unimplemented!()
+}
+
+fn create_thunk_func(
+    original: &walrus::Function,
+    merged_func: FunctionId,
+    params: &[ParamInfo],
+    idx: usize,
+) -> walrus::FunctionBuilder {
+    for param in params {
+        let value = match &param.values {
+            ConstDiff::ConstI32(vs) => {
+                let v = vs[idx];
+            }
+            _ => unimplemented!(),
+        };
+        // TODO: create call instr for merged_func
+    }
+    unimplemented!()
+}
+
+struct ParamInfo {
+    /// const values ordered by the EquivalenceClass's `[head_func] + funcs`
+    values: ConstDiff,
+    uses: Vec<InstrLocId>,
+}
+
+fn derive_params<'func>(class: &EquivalenceClass<'func>) -> Option<Vec<ParamInfo>> {
+    let head_func = match &class.head_func.kind {
+        walrus::FunctionKind::Local(head_func) => head_func,
+        _ => return None,
+    };
+    let mut head_iter = dfs_pre_order_iter(&head_func, head_func.entry_block());
+    let mut sibling_iters = vec![];
+
+    for func in class.funcs.iter() {
+        let func = match &func.kind {
+            walrus::FunctionKind::Local(func) => func,
+            _ => return None,
+        };
+        let iter = dfs_pre_order_iter(func, func.entry_block());
+        sibling_iters.push(iter.map(|(instr, _)| instr));
+    }
+
+    let mut params: Vec<ParamInfo> = vec![];
+
+    while let Some((base_instr, loc)) = head_iter.next() {
+        let siblings = sibling_iters
+            .iter_mut()
+            .map(|iter| iter.next())
+            .collect::<Option<Vec<&Instr>>>()?;
+
+        let diff = match consts_diff(base_instr, siblings) {
+            Some(diff) => diff,
+            None => continue,
+        };
+
+        {
+            let mut found = false;
+            for param in &mut params {
+                if &param.values == &diff {
+                    param.uses.push(*loc);
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                params.push(ParamInfo {
+                    values: diff,
+                    uses: vec![*loc],
+                });
+            }
+        }
+    }
+    Some(params)
+}
+
+#[derive(PartialEq, Eq)]
+enum ConstDiff {
+    ConstI32(Vec<i32>),
+    ConstI64(Vec<i64>),
+    ConstF32(Vec<u32>),
+    ConstF64(Vec<u64>),
+}
+
+fn consts_diff(base: &Instr, siblings: Vec<&Instr>) -> Option<ConstDiff> {
+    let base_value = match base {
+        Instr::Const(Const { value }) => value,
+        _ => return None,
+    };
+
+    let mut diff = match base_value {
+        Value::I32(v) => ConstDiff::ConstI32(vec![*v]),
+        Value::I64(v) => ConstDiff::ConstI64(vec![*v]),
+        Value::F32(v) => ConstDiff::ConstF32(vec![*v]),
+        Value::F64(v) => ConstDiff::ConstF64(vec![*v]),
+        Value::V128(_) => unimplemented!(),
+    };
+
+    for sibling in siblings {
+        match (&mut diff, sibling) {
+            (
+                ConstDiff::ConstI32(values),
+                Instr::Const(Const {
+                    value: Value::I32(v),
+                }),
+            ) => values.push(*v),
+            (
+                ConstDiff::ConstI64(values),
+                Instr::Const(Const {
+                    value: Value::I64(v),
+                }),
+            ) => values.push(*v),
+            (
+                ConstDiff::ConstF32(values),
+                Instr::Const(Const {
+                    value: Value::F32(v),
+                }),
+            ) => values.push(*v),
+            (
+                ConstDiff::ConstF64(values),
+                Instr::Const(Const {
+                    value: Value::F64(v),
+                }),
+            ) => values.push(*v),
+            _ => return None,
+        }
+    }
+    Some(diff)
+}
 
 /// Note that this comparator should satisfy transitivity
 /// are_in_equivalence_class(A, B) && are_in_equivalence_class(B, C) -> are_in_equivalence_class(A, C)
@@ -141,10 +298,8 @@ fn are_in_equivalence_class(
         return false;
     }
 
-    let lhs_iter = dfs_pre_order_iter(&lhs, lhs.entry_block());
-    let lhs_iter = lhs_iter.map(|i| Some(i)).chain(std::iter::repeat(None));
-    let rhs_iter = dfs_pre_order_iter(&rhs, rhs.entry_block());
-    let rhs_iter = rhs_iter.map(|i| Some(i)).chain(std::iter::repeat(None));
+    let mut lhs_iter = dfs_pre_order_iter(&lhs, lhs.entry_block());
+    let mut rhs_iter = dfs_pre_order_iter(&rhs, rhs.entry_block());
 
     struct IdPairMap<Id: Hash + Eq> {
         lhs_to_rhs: HashMap<Id, Id>,
@@ -179,8 +334,8 @@ fn are_in_equivalence_class(
     let mut locals_map = IdPairMap::<LocalId>::new();
     let mut seqs_map = IdPairMap::<InstrSeqId>::new();
 
-    for (lhs_instr, rhs_instr) in lhs_iter.zip(rhs_iter) {
-        let (lhs_instr, rhs_instr) = match (lhs_instr, rhs_instr) {
+    loop {
+        let ((lhs_instr, _), (rhs_instr, _)) = match (lhs_iter.next(), rhs_iter.next()) {
             (None, None) => break,
             (Some(lhs), Some(rhs)) => (lhs, rhs),
             _ => return false,
@@ -486,7 +641,7 @@ fn values_have_same_type(lhs: Value, rhs: Value) -> bool {
 fn dfs_pre_order_iter<'instr>(
     func: &'instr LocalFunction,
     start: InstrSeqId,
-) -> impl Iterator<Item = &'instr Instr> {
+) -> impl Iterator<Item = (&'instr Instr, &'instr InstrLocId)> {
     use walrus::ir::{Block, Loop};
     struct Iter<'instr> {
         func: &'instr LocalFunction,
@@ -494,28 +649,31 @@ fn dfs_pre_order_iter<'instr>(
         current_seq: Option<std::slice::Iter<'instr, (Instr, InstrLocId)>>,
     }
     impl<'instr> Iterator for Iter<'instr> {
-        type Item = &'instr Instr;
+        type Item = (&'instr Instr, &'instr InstrLocId);
         fn next(&mut self) -> Option<Self::Item> {
             fn next<'a>(
                 seq: &mut std::slice::Iter<'a, (Instr, InstrLocId)>,
                 seq_stack: &mut Vec<InstrSeqId>,
-            ) -> Option<&'a Instr> {
-                let instr = match seq.next().map(|(instr, _)| instr) {
-                    Some(instr) => match instr {
-                        Instr::Block(Block { seq }) | Instr::Loop(Loop { seq }) => {
-                            seq_stack.push(*seq);
-                            instr
-                        }
-                        Instr::IfElse(IfElse {
-                            consequent,
-                            alternative,
-                        }) => {
-                            seq_stack.push(*consequent);
-                            seq_stack.push(*alternative);
-                            instr
-                        }
-                        other => other,
-                    },
+            ) -> Option<(&'a Instr, &'a InstrLocId)> {
+                let instr = match seq.next() {
+                    Some((instr, loc)) => {
+                        let instr = match instr {
+                            Instr::Block(Block { seq }) | Instr::Loop(Loop { seq }) => {
+                                seq_stack.push(*seq);
+                                instr
+                            }
+                            Instr::IfElse(IfElse {
+                                consequent,
+                                alternative,
+                            }) => {
+                                seq_stack.push(*consequent);
+                                seq_stack.push(*alternative);
+                                instr
+                            }
+                            other => other,
+                        };
+                        (instr, loc)
+                    }
                     None => return None,
                 };
                 Some(instr)
@@ -598,7 +756,12 @@ mod tests {
         ));
 
         let mut f3_builder = FunctionBuilder::new(&mut module.types, &[], &[]);
-        f3_builder.func_body().i32_const(43).drop().i32_const(24).drop();
+        f3_builder
+            .func_body()
+            .i32_const(43)
+            .drop()
+            .i32_const(24)
+            .drop();
         let f3_id = f3_builder.finish(vec![], &mut module.funcs);
         assert!(!are_in_equivalence_class(
             module.funcs.get(f2_id),
