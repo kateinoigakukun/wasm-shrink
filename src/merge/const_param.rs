@@ -149,18 +149,35 @@ fn try_merge_equivalence_class(class: &EquivalenceClass, module: &mut walrus::Mo
         }
     };
 
+    let (original_param_tys, original_result_tys) = {
+        let (params, results) = module.types.params_results(class.head_func(module).ty());
+        (params.to_vec(), results.to_vec())
+    };
     let merged_func = create_merged_func(class.head_func, &params, module);
+    let params = params
+        .0
+        .into_iter()
+        .map(|param| param.values)
+        .collect::<Vec<_>>();
 
     let mut thunks = vec![create_thunk_func(
-        class.head_func(&module),
-        todo!(),
+        &original_param_tys,
+        &original_result_tys,
+        merged_func,
         &params,
         0,
+        module,
     )];
 
     for (idx, from) in class.funcs.iter().enumerate() {
-        let from = module.funcs.get(*from);
-        thunks.push(create_thunk_func(from, todo!(), &params, idx + 1))
+        thunks.push(create_thunk_func(
+            &original_param_tys,
+            &original_result_tys,
+            merged_func,
+            &params,
+            idx + 1,
+            module,
+        ))
     }
 
     // Replace all calls to `class.head_func` and `class.funcs` with thunks
@@ -376,21 +393,49 @@ fn create_merged_func(
 }
 
 fn create_thunk_func(
-    original: &walrus::Function,
+    original_param_tys: &[ValType],
+    original_result_tys: &[ValType],
     merged_func: FunctionId,
-    params: &[ParamInfo],
+    params: &[ConstDiff],
     idx: usize,
-) -> walrus::FunctionBuilder {
+    module: &mut walrus::Module,
+) -> FunctionId {
+    let mut builder =
+        FunctionBuilder::new(&mut module.types, original_param_tys, original_result_tys);
+    let mut body = builder.func_body();
+
+    let forwarding_args: Vec<LocalId> = original_param_tys
+        .iter()
+        .map(|ty| module.locals.add(*ty))
+        .collect();
+
+    for arg in forwarding_args.iter() {
+        body.local_get(*arg);
+    }
+
     for param in params {
-        let value = match &param.values {
+        match param {
             ConstDiff::ConstI32(vs) => {
                 let v = vs[idx];
+                body.i32_const(v);
             }
-            _ => unimplemented!(),
-        };
-        // TODO: create call instr for merged_func
+            ConstDiff::ConstI64(vs) => {
+                let v = vs[idx];
+                body.i64_const(v);
+            }
+            ConstDiff::ConstF32(vs) => {
+                let v = vs[idx];
+                body.f32_const_exact(v);
+            }
+            ConstDiff::ConstF64(vs) => {
+                let v = vs[idx];
+                body.f64_const_exact(v);
+            }
+        }
     }
-    unimplemented!()
+
+    body.call(merged_func);
+    builder.finish(forwarding_args, &mut module.funcs)
 }
 
 #[derive(Debug)]
@@ -953,12 +998,9 @@ fn dfs_pre_order_iter<'instr>(
 mod tests {
     use std::collections::HashSet;
 
-    use walrus::{ir::Instr, FunctionBuilder, ValType};
+    use walrus::{FunctionBuilder, ValType};
 
-    use crate::merge::const_param::{
-        are_in_equivalence_class, collect_equivalence_class, create_merged_func, derive_params,
-        EquivalenceClass, FunctionHash,
-    };
+    use crate::merge::const_param::*;
 
     fn create_func_hash(builder: FunctionBuilder, module: &mut walrus::Module) -> FunctionHash {
         let f = builder.finish(vec![], &mut module.funcs);
@@ -1129,10 +1171,46 @@ mod tests {
         assert_eq!(instrs.len(), 2);
         let (replaced_instr, _) = instrs.get(0).unwrap();
 
-        if let Instr::LocalGet(local_get) = replaced_instr {
-            assert_eq!(&local_get.local, merged.args.get(0).unwrap());
-        } else {
-            panic!("expected local.get but got {:?}", replaced_instr);
-        }
+        assert_eq!(
+            &replaced_instr.unwrap_local_get().local,
+            merged.args.get(0).unwrap()
+        );
+    }
+
+    #[test]
+    fn test_create_thunk_unit() {
+        let mut module = walrus::Module::default();
+        let mut merged = FunctionBuilder::new(
+            &mut module.types,
+            &[ValType::I32, ValType::I32],
+            &[ValType::I32],
+        );
+        let arg = module.locals.add(ValType::I32);
+        let parameterized = module.locals.add(ValType::I32);
+        merged.func_body().local_get(parameterized);
+
+        let merged_func = merged.finish(vec![arg, parameterized], &mut module.funcs);
+
+        let params = vec![ConstDiff::ConstI32(vec![42])];
+        let thunk = create_thunk_func(
+            &[ValType::I32],
+            &[ValType::I32],
+            merged_func,
+            &params,
+            0,
+            &mut module,
+        );
+        let thunk = module.funcs.get(thunk).kind.unwrap_local();
+        let thunk_params = module.types.params(thunk.ty());
+        assert_eq!(thunk_params, &[ValType::I32]);
+
+        let instrs = thunk.block(thunk.entry_block());
+        assert_eq!(instrs.len(), 3);
+
+        let (instr, _) = instrs.get(0).unwrap();
+        assert_eq!(&instr.unwrap_local_get().local, thunk.args.get(0).unwrap());
+
+        let (instr, _) = instrs.get(1).unwrap();
+        assert_eq!(instr.unwrap_const().value, Value::I32(42));
     }
 }
