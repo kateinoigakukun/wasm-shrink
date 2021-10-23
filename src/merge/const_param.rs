@@ -161,31 +161,31 @@ fn try_merge_equivalence_class(class: &EquivalenceClass, module: &mut walrus::Mo
 
     let mut thunk_map = HashMap::new();
 
-    let head_thunk = create_thunk_func(
-        &original_param_tys,
-        &original_result_tys,
-        merged_func,
-        &params,
-        0,
-        module,
-    );
-    thunk_map.insert(class.head_func, head_thunk);
-
     for (idx, from) in class.funcs.iter().enumerate() {
+        let name = module.funcs.get(*from).name.as_ref();
         thunk_map.insert(
             *from,
             create_thunk_func(
+                name.map(|name| remangle_thunk_func(name)),
                 &original_param_tys,
                 &original_result_tys,
                 merged_func,
                 &params,
-                idx + 1,
+                idx,
                 module,
             ),
         );
     }
 
     replace::replace_funcs(&thunk_map, module);
+}
+
+fn remangle_thunk_func(name: &String) -> String {
+    format!("{}$merge_thunk", name)
+}
+
+fn remangle_merged_func(name: &String) -> String {
+    format!("{}$merge_shared", name)
 }
 
 struct ParamInfos(Vec<ParamInfo>);
@@ -230,6 +230,10 @@ impl<'a> Cloner<'a> {
         module: &mut walrus::Module,
     ) -> FunctionId {
         let original = module.funcs.get(original);
+        let name = original
+            .name
+            .as_ref()
+            .map(|name| remangle_merged_func(&name));
         let original = original.kind.unwrap_local();
 
         let iseq_type_map = {
@@ -265,7 +269,10 @@ impl<'a> Cloner<'a> {
             (param_types, result_types, extra_args)
         };
 
-        let builder = FunctionBuilder::new(&mut module.types, &param_types, &result_types);
+        let mut builder = FunctionBuilder::new(&mut module.types, &param_types, &result_types);
+        if let Some(name) = name {
+            builder.name(name);
+        }
         let mut iseq_map = HashMap::new();
         iseq_map.insert(original.entry_block(), builder.func_body_id());
 
@@ -398,6 +405,7 @@ fn create_merged_func(
 }
 
 fn create_thunk_func(
+    name: Option<String>,
     original_param_tys: &[ValType],
     original_result_tys: &[ValType],
     merged_func: FunctionId,
@@ -407,6 +415,9 @@ fn create_thunk_func(
 ) -> FunctionId {
     let mut builder =
         FunctionBuilder::new(&mut module.types, original_param_tys, original_result_tys);
+    if let Some(name) = name {
+        builder.name(name);
+    }
     let mut body = builder.func_body();
 
     let forwarding_args: Vec<LocalId> = original_param_tys
@@ -1005,7 +1016,7 @@ mod tests {
 
     use walrus::{FunctionBuilder, ValType};
 
-    use crate::merge::const_param::{*, self};
+    use crate::merge::const_param::{self, *};
 
     fn create_func_hash(builder: FunctionBuilder, module: &mut walrus::Module) -> FunctionHash {
         let f = builder.finish(vec![], &mut module.funcs);
@@ -1198,6 +1209,7 @@ mod tests {
 
         let params = vec![ConstDiff::ConstI32(vec![42])];
         let thunk = create_thunk_func(
+            None,
             &[ValType::I32],
             &[ValType::I32],
             merged_func,
