@@ -1265,4 +1265,9 @@ mod tests {
     fn test_merge_0() {
         check_no_crash("0.wasm")
     }
+
+    #[test]
+    fn test_merge_1() {
+        check_no_crash("1.wasm")
+    }
 }

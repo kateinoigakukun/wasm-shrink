@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use walrus::ir::VisitorMut;
+use walrus::{ExportItem, ir::VisitorMut};
 
 struct Replacer<'a> {
     replacing_map: &'a HashMap<walrus::FunctionId, walrus::FunctionId>,
@@ -23,10 +23,6 @@ pub fn replace_funcs(
         walrus::ir::dfs_pre_order_mut(&mut Replacer { replacing_map: map }, func, entry);
     }
 
-    for (from, _) in map.iter() {
-        module.funcs.delete(*from);
-    }
-
     for element in module.elements.iter_mut() {
         for (i, member) in element.members.clone().iter().enumerate() {
             let member = match member {
@@ -39,5 +35,23 @@ pub fn replace_funcs(
             };
             element.members[i] = Some(*to_func_id);
         }
+    }
+
+    for export in module.exports.iter_mut() {
+        let item = match export.item {
+            ExportItem::Function(from) => {
+                if let Some(to) = map.get(&from) {
+                    ExportItem::Function(*to)
+                } else {
+                    ExportItem::Function(from)
+                }
+            }
+            other => other,
+        };
+        export.item = item;
+    }
+
+    for (from, _) in map.iter() {
+        module.funcs.delete(*from);
     }
 }
