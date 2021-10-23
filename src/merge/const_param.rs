@@ -31,7 +31,7 @@ impl FunctionHash {
         let mut hasher = DefaultHasher::new();
         let ty = module.types.get(f.ty());
         ty.hash(&mut hasher);
-        func_hash::run(f, &mut hasher);
+        func_hash::run(f, module, &mut hasher);
         Self(hasher.finish())
     }
 }

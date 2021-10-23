@@ -2,14 +2,15 @@ use std::hash::{Hash, Hasher};
 use walrus::ir::*;
 use walrus::{
     ir::{InstrSeq, InstrSeqId, Visitor},
-    InstrLocId, LocalFunction,
+    InstrLocId, LocalFunction, Module,
 };
 
-pub(crate) fn run<H: Hasher>(func: &LocalFunction, hasher: &mut H) {
+pub(crate) fn run<H: Hasher>(func: &LocalFunction, module: &Module, hasher: &mut H) {
     let v = &mut Emit {
         blocks: vec![],
         block_kinds: vec![BlockKind::FunctionEntry],
         hasher,
+        module,
     };
     dfs_in_order(v, func, func.entry_block());
 
@@ -36,7 +37,7 @@ enum BlockKind {
     FunctionEntry,
 }
 
-struct Emit<'a, H: Hasher> {
+struct Emit<'a, 'b, H: Hasher> {
     // Stack of blocks that we are currently emitting instructions for. A branch
     // is only valid if its target is one of these blocks. See also the
     // `branch_target` method.
@@ -50,9 +51,11 @@ struct Emit<'a, H: Hasher> {
 
     // The instruction sequence we are building up to emit.
     hasher: &'a mut H,
+
+    module: &'b Module,
 }
 
-impl<'instr, H: Hasher> Visitor<'instr> for Emit<'_, H> {
+impl<'instr, H: Hasher> Visitor<'instr> for Emit<'_, '_, H> {
     fn start_instr_seq(&mut self, seq: &'instr InstrSeq) {
         self.blocks.push(seq.id());
         debug_assert_eq!(self.blocks.len(), self.block_kinds.len());
@@ -872,7 +875,7 @@ impl<'instr, H: Hasher> Visitor<'instr> for Emit<'_, H> {
     }
 }
 
-impl<H: Hasher> Emit<'_, H> {
+impl<H: Hasher> Emit<'_, '_, H> {
     fn branch_target(&self, block: InstrSeqId) -> u32 {
         self.blocks.iter().rev().position(|b| *b == block).expect(
             "attempt to branch to invalid block; bad transformation pass introduced bad branching?",
@@ -883,9 +886,7 @@ impl<H: Hasher> Emit<'_, H> {
         match ty {
             InstrSeqType::Simple(None) => self.hasher.write_u8(0x40),
             InstrSeqType::Simple(Some(ty)) => ty.hash(self.hasher),
-            InstrSeqType::MultiValue(_ty) => {
-                unimplemented!()
-            }
+            InstrSeqType::MultiValue(ty) => self.module.types.get(ty).hash(self.hasher),
         }
     }
 
