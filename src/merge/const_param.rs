@@ -1256,6 +1256,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_merge_large_complex() {
         check_no_crash("swift-hello.wasm")
     }

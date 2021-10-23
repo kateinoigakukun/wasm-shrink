@@ -14,5 +14,9 @@ env_logger = "0.8"
 walrus = { git = "https://github.com/kateinoigakukun/walrus.git", branch = "wasm-shrink" }
 # walrus = { path = "../walrus" }
 
+[dev-dependencies]
+wasmtime-wast = "0.30"
+wasmtime = "0.30"
+
 [workspace]
 members = ["tracker"]
