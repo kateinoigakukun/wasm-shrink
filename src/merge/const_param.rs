@@ -1001,11 +1001,11 @@ fn dfs_pre_order_iter<'instr>(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
+    use std::{collections::HashSet, path::PathBuf};
 
     use walrus::{FunctionBuilder, ValType};
 
-    use crate::merge::const_param::*;
+    use crate::merge::const_param::{*, self};
 
     fn create_func_hash(builder: FunctionBuilder, module: &mut walrus::Module) -> FunctionHash {
         let f = builder.finish(vec![], &mut module.funcs);
@@ -1217,5 +1217,22 @@ mod tests {
 
         let (instr, _) = instrs.get(1).unwrap();
         assert_eq!(instr.unwrap_const().value, Value::I32(42));
+    }
+
+    #[test]
+    fn test_merge_simple() {
+        let fixture = PathBuf::from(file!())
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("tracker/fixture");
+        let source = fixture.join("simple.wasm");
+        let result = fixture.join("simple.wasm.opt");
+        let mut module = walrus::Module::from_file(source).unwrap();
+        const_param::merge_funcs(&mut module);
+        module.emit_wasm_file(result).unwrap();
     }
 }
