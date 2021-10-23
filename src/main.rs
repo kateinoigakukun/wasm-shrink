@@ -1,7 +1,7 @@
 use anyhow::anyhow;
 use std::path::PathBuf;
 use structopt::StructOpt;
-mod merge;
+use wasm_shrink::merge;
 
 #[derive(StructOpt, Debug)]
 struct Opt {
