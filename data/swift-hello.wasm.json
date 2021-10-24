@@ -2,23 +2,35 @@
   "name": "fixture/swift-hello.wasm",
   "records": [
     {
+      "rev": "459ac9bcfe08a37aa6ef35a4471b49f5b0ca6102",
+      "date": "2021-10-24T07:13:56Z",
+      "sizes": {
+        "const-param": 9166174,
+        "exact-match": 8906935
+      },
+      "rates": {
+        "exact-match": 0.9264661170655223,
+        "const-param": 0.9534311897557293
+      }
+    },
+    {
       "rev": "8ffc3d659f07f0f44b7c66b89372ad48a0233833",
       "date": "2021-10-24T07:00:48Z",
       "sizes": {
-        "exact-match": 8906935,
-        "const-param": 9166174
+        "const-param": 9166174,
+        "exact-match": 8906935
       },
       "rates": {
-        "const-param": 0.9534311897557293,
-        "exact-match": 0.9264661170655223
+        "exact-match": 0.9264661170655224,
+        "const-param": 0.9534311897557292
       }
     },
     {
       "rev": "03a04a55e23bffac1b27d9189fa50e4743529c83",
       "date": "2021-10-24T05:15:47Z",
       "sizes": {
-        "const-param": 9166171,
-        "exact-match": 8906935
+        "exact-match": 8906935,
+        "const-param": 9166171
       },
       "rates": {
         "exact-match": 0.9264661170655224,
@@ -41,8 +53,8 @@
       "rev": "a9717420e012ad42f5ea8d3efc537c291d5a07f1",
       "date": "2021-10-24T04:32:11Z",
       "sizes": {
-        "exact-match": 8906935,
-        "const-param": 9622752
+        "const-param": 9622752,
+        "exact-match": 8906935
       },
       "rates": {
         "exact-match": 0.9264661170655224,
@@ -69,20 +81,20 @@
         "const-param": 9622752
       },
       "rates": {
-        "exact-match": 0.9264661170655224,
-        "const-param": 1.0009227282925597
+        "const-param": 1.0009227282925597,
+        "exact-match": 0.9264661170655224
       }
     },
     {
       "rev": "82298a5aeb1fc1e071107a578ed9c7dd4287846a",
       "date": "2021-10-24T03:49:10Z",
       "sizes": {
-        "const-param": 9622752,
-        "exact-match": 8906935
+        "exact-match": 8906935,
+        "const-param": 9622752
       },
       "rates": {
-        "const-param": 1.0009227282925597,
-        "exact-match": 0.9264661170655224
+        "exact-match": 0.9264661170655224,
+        "const-param": 1.0009227282925597
       }
     },
     {
@@ -93,8 +105,8 @@
         "const-param": 9622752
       },
       "rates": {
-        "exact-match": 0.9264661170655224,
-        "const-param": 1.0009227282925597
+        "const-param": 1.0009227282925597,
+        "exact-match": 0.9264661170655224
       }
     },
     {
