@@ -611,11 +611,11 @@ fn are_in_equivalence_class(
     let mut lhs_iter = dfs_pre_order_iter(&lhs, lhs.entry_block());
     let mut rhs_iter = dfs_pre_order_iter(&rhs, rhs.entry_block());
 
-    struct IdPairMap<Id: Hash + Eq> {
+    struct IdPairMap<Id> {
         lhs_to_rhs: HashMap<Id, Id>,
     }
 
-    impl<Id: Hash + Eq> Deref for IdPairMap<Id> {
+    impl<Id> Deref for IdPairMap<Id> {
         type Target = HashMap<Id, Id>;
         fn deref(&self) -> &Self::Target {
             &self.lhs_to_rhs
@@ -927,10 +927,15 @@ fn are_in_equivalence_class(
         }
     }
 
-    for (lhs_local, rhs_local) in locals_map.iter() {
-        let lhs = module.locals.get(*lhs_local);
-        let rhs = module.locals.get(*rhs_local);
-        if lhs.ty() != rhs.ty() {
+    for (lhs_local_id, rhs_local_id) in locals_map.iter() {
+        let lhs_local = module.locals.get(*lhs_local_id);
+        let rhs_local = module.locals.get(*rhs_local_id);
+        if lhs_local.ty() != rhs_local.ty() {
+            return false;
+        }
+        let lhs_idx = lhs.args.iter().position(|id| id == lhs_local_id);
+        let rhs_idx = rhs.args.iter().position(|id| id == rhs_local_id);
+        if lhs_idx != rhs_idx {
             return false;
         }
     }
@@ -1083,7 +1088,6 @@ mod tests {
             module.funcs.get(f2_id),
             &module
         ));
-
     }
     #[test]
     fn test_are_in_equivalence_class_1() {
@@ -1108,16 +1112,23 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_are_in_equivalence_class_2() {
         let mut module = walrus::Module::default();
-        let mut f4_builder = FunctionBuilder::new(&mut module.types, &[ValType::I32, ValType::I32], &[ValType::I32]);
+        let mut f4_builder = FunctionBuilder::new(
+            &mut module.types,
+            &[ValType::I32, ValType::I32],
+            &[ValType::I32],
+        );
         let arg0 = module.locals.add(ValType::I32);
         let arg1 = module.locals.add(ValType::I32);
         f4_builder.func_body().local_get(arg0);
         let f4_id = f4_builder.finish(vec![arg0, arg1], &mut module.funcs);
 
-        let mut f5_builder = FunctionBuilder::new(&mut module.types, &[ValType::I32, ValType::I32], &[ValType::I32]);
+        let mut f5_builder = FunctionBuilder::new(
+            &mut module.types,
+            &[ValType::I32, ValType::I32],
+            &[ValType::I32],
+        );
         let arg0 = module.locals.add(ValType::I32);
         let arg1 = module.locals.add(ValType::I32);
         f5_builder.func_body().local_get(arg1);
@@ -1326,10 +1337,5 @@ mod tests {
     #[test]
     fn test_merge_0() {
         check_no_crash("0.wasm")
-    }
-
-    #[test]
-    fn test_merge_1() {
-        check_no_crash("1.wasm")
     }
 }
