@@ -16,14 +16,26 @@
     {
       "rev": "a9717420e012ad42f5ea8d3efc537c291d5a07f1",
       "date": "2021-10-24T04:32:11Z",
-      "sizes": {},
-      "rates": {}
+      "sizes": {
+        "const-param": 9622752,
+        "exact-match": 8906935
+      },
+      "rates": {
+        "const-param": 1.0009227282925595,
+        "exact-match": 0.9264661170655223
+      }
     },
     {
       "rev": "9d7c8ce2d795901bd27693dbf7e438f631707401",
       "date": "2021-10-24T04:23:17Z",
-      "sizes": {},
-      "rates": {}
+      "sizes": {
+        "const-param": 9622752,
+        "exact-match": 8906935
+      },
+      "rates": {
+        "const-param": 1.0009227282925595,
+        "exact-match": 0.9264661170655223
+      }
     },
     {
       "rev": "b78df967c4461d239ce63e108f2baf1ed710e72e",
