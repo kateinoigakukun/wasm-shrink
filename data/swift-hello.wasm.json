@@ -2,6 +2,18 @@
   "name": "fixture/swift-hello.wasm",
   "records": [
     {
+      "rev": "08bc36c1f4fefb1511d80ec843b6af3751297bbc",
+      "date": "2021-10-24T04:57:56Z",
+      "sizes": {
+        "const-param": 9622752,
+        "exact-match": 8906935
+      },
+      "rates": {
+        "const-param": 1.0009227282925595,
+        "exact-match": 0.9264661170655223
+      }
+    },
+    {
       "rev": "a9717420e012ad42f5ea8d3efc537c291d5a07f1",
       "date": "2021-10-24T04:32:11Z",
       "sizes": {},
@@ -17,8 +29,8 @@
       "rev": "b78df967c4461d239ce63e108f2baf1ed710e72e",
       "date": "2021-10-24T03:58:42Z",
       "sizes": {
-        "exact-match": 8906935,
-        "const-param": 9622752
+        "const-param": 9622752,
+        "exact-match": 8906935
       },
       "rates": {
         "const-param": 1.0009227282925597,
@@ -33,20 +45,20 @@
         "exact-match": 8906935
       },
       "rates": {
-        "exact-match": 0.9264661170655224,
-        "const-param": 1.0009227282925597
+        "const-param": 1.0009227282925597,
+        "exact-match": 0.9264661170655224
       }
     },
     {
       "rev": "c8bbd6a4050d3480d0c693f5da58e8d5260fda9a",
       "date": "2021-10-24T01:03:29Z",
       "sizes": {
-        "const-param": 9622752,
-        "exact-match": 8906935
+        "exact-match": 8906935,
+        "const-param": 9622752
       },
       "rates": {
-        "exact-match": 0.9264661170655224,
-        "const-param": 1.0009227282925597
+        "const-param": 1.0009227282925597,
+        "exact-match": 0.9264661170655224
       }
     },
     {
