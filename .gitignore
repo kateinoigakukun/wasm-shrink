@@ -1,4 +1,4 @@
 /target
-/tracker/html/data.json
+/tracker/html/data/*.json
 # macOS's Instruments.app artifacts
 *.trace

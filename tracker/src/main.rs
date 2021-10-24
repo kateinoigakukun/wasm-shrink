@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashMap,
     fs::File,
     path::PathBuf,
     process::{Command, Stdio},
@@ -63,8 +64,8 @@ impl Opt {
 struct Record {
     rev: String,
     date: DateTime<Utc>,
-    size: Option<u64>,
-    rate: Option<f64>,
+    sizes: HashMap<String, u64>,
+    rates: HashMap<String, f64>,
 }
 #[derive(Serialize, Deserialize)]
 struct TargetBenchmark {
@@ -146,7 +147,8 @@ fn measure_size_in_rev(
     rev: &str,
     workdir: &PathBuf,
     target_exe: &PathBuf,
-) -> Result<u64, Box<dyn std::error::Error>> {
+    strategies: &[&str],
+) -> Result<HashMap<String, u64>, Box<dyn std::error::Error>> {
     exec(
         Command::new("git")
             .arg("checkout")
@@ -154,13 +156,32 @@ fn measure_size_in_rev(
             .current_dir(workdir),
     )?;
 
+    let sizes = strategies
+        .iter()
+        .filter_map(|strategy| {
+            let size = run_and_measure(workdir, target_exe, strategy).ok()?;
+            Some((String::from(*strategy), size))
+        })
+        .collect::<HashMap<_, _>>();
+
+    Ok(sizes)
+}
+
+fn run_and_measure(
+    workdir: &PathBuf,
+    target_exe: &PathBuf,
+    strategy: &str,
+) -> Result<u64, Box<dyn std::error::Error>> {
     let temp_output = tempfile::NamedTempFile::new()?;
     exec(
         Command::new("cargo")
             .arg("run")
+            .arg("--release")
             .arg(target_exe)
             .arg("--output")
             .arg(temp_output.path())
+            .arg("--merge-strategy")
+            .arg(strategy)
             .current_dir(workdir),
     )?;
 
@@ -180,7 +201,39 @@ fn collect_records(
     let abs_target = target.canonicalize()?;
     let original_size = std::fs::metadata(&abs_target)?.len();
 
-    for rev in revs {
+    let strategies_info = [
+        // (stategy id, since rev)
+
+        // commit 8f2c0f562d3e06e6d06497974e908315bba92d8a
+        // Author: Yuta Saito <kateinoigakukun@gmail.com>
+        // Date:   Tue Oct 12 17:17:55 2021 +0900
+        //
+        //     code: use absolute path to run the shrinker
+        //
+        ("exact-match", "8f2c0f562d3e06e6d06497974e908315bba92d8a"),
+
+        // commit c8bbd6a4050d3480d0c693f5da58e8d5260fda9a
+        // Author: Yuta Saito <kateinoigakukun@gmail.com>
+        // Date:   Sun Oct 24 10:03:29 2021 +0900
+        //
+        //     chore: ignore .trace profiler artifacts for Instruments.app
+        //
+        ("const-param", "c8bbd6a4050d3480d0c693f5da58e8d5260fda9a"),
+    ];
+
+    let mut strategies = vec![];
+
+    for rev in revs.iter().rev() {
+        let mut new_strategies = strategies_info.iter().filter_map(|(id, since_rev)| {
+            if *since_rev == rev {
+                Some(*id)
+            } else {
+                None
+            }
+        }).collect::<Vec<_>>();
+        if !new_strategies.is_empty() {
+            strategies.append(&mut new_strategies);
+        }
         let date = exec(
             Command::new("git")
                 .arg("show")
@@ -191,23 +244,27 @@ fn collect_records(
         )?;
         println!("{}", date);
         let date = DateTime::parse_from_rfc2822(&date.trim_end())?.with_timezone(&Utc);
-        let record = match measure_size_in_rev(&rev, &workdir, &abs_target) {
-            Ok(size) => {
-                log::info!("{} {}", rev, size);
+        let record = match measure_size_in_rev(&rev, &workdir, &abs_target, &strategies) {
+            Ok(sizes) => {
+                let rates = sizes
+                    .iter()
+                    .map(|(key, size)| (key.clone(), *size as f64 / original_size as f64))
+                    .collect();
+                log::info!("{} {:?}", rev, sizes);
                 Record {
                     rev: rev.to_string(),
-                    date: date,
-                    size: Some(size),
-                    rate: Some(size as f64 / original_size as f64),
+                    date,
+                    sizes,
+                    rates,
                 }
             }
             Err(err) => {
                 log::warn!("failed to measure size in {}: {}", rev, err);
                 Record {
                     rev: rev.to_string(),
-                    date: date,
-                    size: None,
-                    rate: None,
+                    date,
+                    sizes: HashMap::new(),
+                    rates: HashMap::new(),
                 }
             }
         };
