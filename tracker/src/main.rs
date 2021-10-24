@@ -192,6 +192,19 @@ fn run_and_measure(
     Ok(size)
 }
 
+fn is_newer_rev(lhs: &str, rhs: &str, workdir: &PathBuf) -> bool {
+    let logs = exec(
+        Command::new("git")
+            .arg("log")
+            .arg("--oneline")
+            .arg(lhs)
+            .arg(rhs)
+            .current_dir(&workdir),
+    )
+    .unwrap();
+    !logs.trim_end().is_empty()
+}
+
 fn collect_records(
     revs: Vec<String>,
     workdir: &PathBuf,
@@ -211,7 +224,6 @@ fn collect_records(
         //     code: use absolute path to run the shrinker
         //
         ("exact-match", "8f2c0f562d3e06e6d06497974e908315bba92d8a"),
-
         // commit c8bbd6a4050d3480d0c693f5da58e8d5260fda9a
         // Author: Yuta Saito <kateinoigakukun@gmail.com>
         // Date:   Sun Oct 24 10:03:29 2021 +0900
@@ -221,19 +233,17 @@ fn collect_records(
         ("const-param", "c8bbd6a4050d3480d0c693f5da58e8d5260fda9a"),
     ];
 
-    let mut strategies = vec![];
-
     for rev in revs.iter().rev() {
-        let mut new_strategies = strategies_info.iter().filter_map(|(id, since_rev)| {
-            if *since_rev == rev {
-                Some(*id)
-            } else {
-                None
-            }
-        }).collect::<Vec<_>>();
-        if !new_strategies.is_empty() {
-            strategies.append(&mut new_strategies);
-        }
+        let strategies = strategies_info
+            .iter()
+            .filter_map(|(id, since)| {
+                if is_newer_rev(rev, since, workdir) {
+                    Some(*id)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
         let date = exec(
             Command::new("git")
                 .arg("show")
