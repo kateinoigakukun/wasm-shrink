@@ -1,0 +1,9 @@
+[package]
+name = "wasm-extract"
+version = "0.1.0"
+edition = "2018"
+
+[dependencies]
+walrus = "0.19"
+structopt = "0.3"
+anyhow = "1.0"

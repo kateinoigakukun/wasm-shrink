@@ -1329,6 +1329,19 @@ mod tests {
         assert_eq!(instr.unwrap_const().value, Value::I32(42));
     }
 
+    #[test]
+    fn test_merge_funcs_0() {
+        let mut module = walrus::Module::default();
+        let mut f1_builder = FunctionBuilder::new(&mut module.types, &[], &[]);
+        f1_builder.func_body().i32_const(42).drop();
+        f1_builder.finish(vec![], &mut module.funcs);
+
+        let mut f2_builder = FunctionBuilder::new(&mut module.types, &[], &[]);
+        f2_builder.func_body().i32_const(43).drop();
+        f2_builder.finish(vec![], &mut module.funcs);
+
+    }
+
     fn find_tool<P>(exe_name: P) -> Option<PathBuf>
     where
         P: AsRef<Path>,

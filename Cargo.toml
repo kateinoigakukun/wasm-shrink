@@ -20,4 +20,4 @@ wast = "37.0"
 wasmtime = "0.30"
 
 [workspace]
-members = ["tracker"]
+members = ["tracker", "wasm-extract"]
