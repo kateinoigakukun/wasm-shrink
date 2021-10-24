@@ -2,6 +2,18 @@
   "name": "fixture/swift-hello.wasm",
   "records": [
     {
+      "rev": "03a04a55e23bffac1b27d9189fa50e4743529c83",
+      "date": "2021-10-24T05:15:47Z",
+      "sizes": {
+        "const-param": 9166171,
+        "exact-match": 8906935
+      },
+      "rates": {
+        "const-param": 0.9534308777069322,
+        "exact-match": 0.9264661170655223
+      }
+    },
+    {
       "rev": "08bc36c1f4fefb1511d80ec843b6af3751297bbc",
       "date": "2021-10-24T04:57:56Z",
       "sizes": {
@@ -9,8 +21,8 @@
         "exact-match": 8906935
       },
       "rates": {
-        "const-param": 1.0009227282925595,
-        "exact-match": 0.9264661170655223
+        "exact-match": 0.9264661170655224,
+        "const-param": 1.0009227282925597
       }
     },
     {
@@ -21,8 +33,8 @@
         "exact-match": 8906935
       },
       "rates": {
-        "const-param": 1.0009227282925595,
-        "exact-match": 0.9264661170655223
+        "const-param": 1.0009227282925597,
+        "exact-match": 0.9264661170655224
       }
     },
     {
@@ -33,8 +45,8 @@
         "exact-match": 8906935
       },
       "rates": {
-        "const-param": 1.0009227282925595,
-        "exact-match": 0.9264661170655223
+        "exact-match": 0.9264661170655224,
+        "const-param": 1.0009227282925597
       }
     },
     {
@@ -53,8 +65,8 @@
       "rev": "82298a5aeb1fc1e071107a578ed9c7dd4287846a",
       "date": "2021-10-24T03:49:10Z",
       "sizes": {
-        "const-param": 9622752,
-        "exact-match": 8906935
+        "exact-match": 8906935,
+        "const-param": 9622752
       },
       "rates": {
         "const-param": 1.0009227282925597,
@@ -65,12 +77,12 @@
       "rev": "c8bbd6a4050d3480d0c693f5da58e8d5260fda9a",
       "date": "2021-10-24T01:03:29Z",
       "sizes": {
-        "exact-match": 8906935,
-        "const-param": 9622752
+        "const-param": 9622752,
+        "exact-match": 8906935
       },
       "rates": {
-        "const-param": 1.0009227282925597,
-        "exact-match": 0.9264661170655224
+        "exact-match": 0.9264661170655224,
+        "const-param": 1.0009227282925597
       }
     },
     {
