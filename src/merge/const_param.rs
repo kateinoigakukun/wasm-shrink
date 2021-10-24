@@ -1,4 +1,9 @@
 //! Constant Parameterization
+//!
+//! ## TODO
+//! - Create thunk based on merge-benefit
+//! - Merge functions bottom-up in call graph
+//! - Allow direct callee difference
 
 use std::collections::{hash_map::DefaultHasher, HashMap};
 use std::hash::{Hash, Hasher};
