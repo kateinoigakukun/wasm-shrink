@@ -2,8 +2,8 @@
   "name": "fixture/swift-hello.wasm",
   "records": [
     {
-      "rev": "9c99969258ed7b94615733bb6903696e23e1b36c",
-      "date": "2021-10-24T11:43:11Z",
+      "rev": "10b3267410e5917bad2c343d5e9582614418e0b1",
+      "date": "2021-10-24T08:44:27Z",
       "sizes": {
         "const-param": 9166172,
         "exact-match": 8906935
@@ -12,12 +12,6 @@
         "const-param": 0.953430981723198,
         "exact-match": 0.9264661170655223
       }
-    },
-    {
-      "rev": "10b3267410e5917bad2c343d5e9582614418e0b1",
-      "date": "2021-10-24T08:44:27Z",
-      "sizes": {},
-      "rates": {}
     },
     {
       "rev": "459ac9bcfe08a37aa6ef35a4471b49f5b0ca6102",
