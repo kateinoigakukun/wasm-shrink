@@ -2,6 +2,12 @@
   "name": "fixture/swift-hello.wasm",
   "records": [
     {
+      "rev": "080fe203d7b863a64adcb2b1cf6f7ee08a4c30b4",
+      "date": "2021-10-24T00:30:14Z",
+      "size": 8906935,
+      "rate": 0.9264661170655223
+    },
+    {
       "rev": "8beb197653900eeec14277c3e933b5fb7cbffe20",
       "date": "2021-10-24T00:26:04Z",
       "size": 8906935,
