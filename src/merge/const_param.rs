@@ -1053,7 +1053,10 @@ fn dfs_pre_order_iter<'instr>(
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashSet, path::PathBuf};
+    use std::{
+        collections::HashSet,
+        path::{Path, PathBuf},
+    };
 
     use walrus::{FunctionBuilder, ValType};
 
@@ -1326,6 +1329,24 @@ mod tests {
         assert_eq!(instr.unwrap_const().value, Value::I32(42));
     }
 
+    fn find_tool<P>(exe_name: P) -> Option<PathBuf>
+    where
+        P: AsRef<Path>,
+    {
+        std::env::var_os("PATH").and_then(|paths| {
+            std::env::split_paths(&paths)
+                .filter_map(|dir| {
+                    let full_path = dir.join(&exe_name);
+                    if full_path.is_file() {
+                        Some(full_path)
+                    } else {
+                        None
+                    }
+                })
+                .next()
+        })
+    }
+
     fn check_no_crash(file: &str) {
         let fixture = PathBuf::from(file!())
             .parent()
@@ -1339,7 +1360,19 @@ mod tests {
         let result = fixture.join(format!("{}.opt", file));
         let mut module = walrus::Module::from_file(source).unwrap();
         const_param::merge_funcs(&mut module);
-        module.emit_wasm_file(result).unwrap();
+        module.emit_wasm_file(result.clone()).unwrap();
+
+        if let Some(wasm2wat) = find_tool("wasm2wat") {
+            let wat_output = fixture.join(format!("{}.opt.wat", file));
+            std::process::Command::new(wasm2wat)
+                .arg(result)
+                .arg("-o")
+                .arg(wat_output)
+                .spawn()
+                .unwrap()
+                .wait()
+                .unwrap();
+        }
     }
 
     #[test]
@@ -1348,7 +1381,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_merge_large_complex() {
         check_no_crash("swift-hello.wasm")
     }
