@@ -11,13 +11,17 @@ function humanReadableFileSize(bytes) {
 }
 
 async function start() {
-    const response = await fetch('./data.json');
+    const response = await fetch('./data/swift-hello.wasm.json');
     const json = await response.json();
 
     const records = json.records.reverse();
     const categories = records.map(record => record.date);
-    const data = records.map(record => {
-        return { y: record.size, rev: record.rev, date: record.date }
+    const strategies = ["exact-match", "const-param"];
+    const series = strategies.map(strategy => {
+        let data = records.map(record => {
+            return { y: record.sizes[strategy], rate: record.rates[strategy], rev: record.rev, date: record.date }
+        });
+        return { name: strategy, data }
     });
 
     Highcharts.chart('container', {
@@ -39,11 +43,11 @@ async function start() {
             }
         },
         tooltip: {
-            formatter: function() {
+            formatter: function () {
                 return `size: ${this.y}<br>rate: ${this.point.rate}<br>date: ${this.point.date}<br>rev: ${this.point.rev}`;
             }
         },
-        series: [{ name: json.name, data }]
+        series
     });
 }
 
