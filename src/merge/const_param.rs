@@ -167,6 +167,15 @@ fn try_merge_equivalence_class(class: &EquivalenceClass, module: &mut walrus::Mo
         }
     };
 
+    if params.is_empty() {
+        let mut thunk_map = HashMap::new();
+        for from in class.funcs.iter().skip(1) {
+            thunk_map.insert(*from, class.primary_func);
+        }
+        replace::replace_funcs(&thunk_map, module);
+        return;
+    }
+
     let (original_param_tys, original_result_tys) = {
         let (params, results) = module.types.params_results(class.primary_func(module).ty());
         (params.to_vec(), results.to_vec())
