@@ -13,7 +13,8 @@ use walrus::{
     FunctionBuilder, FunctionId, InstrLocId, InstrSeqBuilder, LocalFunction, LocalId, ValType,
 };
 
-use super::{func_hash, replace};
+use crate::merge::call_graph::CallGraph;
+use crate::merge::{func_hash, replace};
 
 #[derive(PartialEq, Eq, Debug, Hash, Clone, Copy)]
 struct FunctionHash(u64);
@@ -72,6 +73,7 @@ impl EquivalenceClass {
 }
 
 pub fn merge_funcs(module: &mut walrus::Module) {
+    let mut call_graph = CallGraph::build_from(module);
     let fn_classes = collect_equivalence_class(module);
 
     log::debug!("Dump function equivalence classes");
@@ -104,7 +106,7 @@ pub fn merge_funcs(module: &mut walrus::Module) {
     log::debug!("mergable_funcs = {}", mergable_funcs);
 
     for class in fn_classes {
-        try_merge_equivalence_class(&class, module);
+        try_merge_equivalence_class(&class, module, &mut call_graph);
     }
 }
 
@@ -158,7 +160,11 @@ fn collect_equivalence_class(module: &walrus::Module) -> Vec<EquivalenceClass> {
     fn_classes
 }
 
-fn try_merge_equivalence_class(class: &EquivalenceClass, module: &mut walrus::Module) {
+fn try_merge_equivalence_class(
+    class: &EquivalenceClass,
+    module: &mut walrus::Module,
+    call_graph: &mut CallGraph,
+) {
     let params = match derive_params(class, module) {
         Some(params) => params,
         None => {
@@ -172,7 +178,7 @@ fn try_merge_equivalence_class(class: &EquivalenceClass, module: &mut walrus::Mo
         for from in class.funcs.iter().skip(1) {
             thunk_map.insert(*from, class.primary_func);
         }
-        replace::replace_funcs(&thunk_map, module);
+        replace::replace_funcs(&thunk_map, module, call_graph);
         return;
     }
 
@@ -187,6 +193,11 @@ fn try_merge_equivalence_class(class: &EquivalenceClass, module: &mut walrus::Mo
         &params,
         module,
     );
+    call_graph.add_function(
+        merged_func,
+        module.funcs.get(merged_func).kind.unwrap_local(),
+    );
+
     let params = params
         .0
         .into_iter()
@@ -197,21 +208,20 @@ fn try_merge_equivalence_class(class: &EquivalenceClass, module: &mut walrus::Mo
 
     for (idx, from) in class.funcs.iter().enumerate() {
         let name = module.funcs.get(*from).name.as_ref().map(String::as_str);
-        thunk_map.insert(
-            *from,
-            create_thunk_func(
-                class.thunk_func_name(name),
-                &original_param_tys,
-                &original_result_tys,
-                merged_func,
-                &params,
-                idx,
-                module,
-            ),
+        let thunk_id = create_thunk_func(
+            class.thunk_func_name(name),
+            &original_param_tys,
+            &original_result_tys,
+            merged_func,
+            &params,
+            idx,
+            module,
         );
+        thunk_map.insert(*from, thunk_id);
+        call_graph.add_function(thunk_id, module.funcs.get(thunk_id).kind.unwrap_local());
     }
 
-    replace::replace_funcs(&thunk_map, module);
+    replace::replace_funcs(&thunk_map, module, call_graph);
 }
 
 struct ParamInfos(Vec<ParamInfo>);

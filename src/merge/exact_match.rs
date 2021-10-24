@@ -1,7 +1,7 @@
 use std::{collections::HashMap, hash::Hash};
 use walrus::ir::{Visitor, VisitorMut};
 
-use crate::merge::replace;
+use crate::merge::{call_graph::CallGraph, replace};
 
 struct HashInstr(String);
 
@@ -46,6 +46,7 @@ fn compute_func_key(func: &walrus::LocalFunction) -> FunctionKey {
 }
 
 pub fn merge_funcs(module: &mut walrus::Module) {
+    let mut call_graph = CallGraph::build_from(module);
     let mut func_hashmap = HashMap::new();
     let mut replacing_map = HashMap::new();
 
@@ -74,5 +75,5 @@ pub fn merge_funcs(module: &mut walrus::Module) {
     let mergable_funcs = replacing_map.len();
     log::debug!("mergable_funcs = {}", mergable_funcs);
 
-    replace::replace_funcs(&replacing_map, module);
+    replace::replace_funcs(&replacing_map, module, &mut call_graph);
 }
