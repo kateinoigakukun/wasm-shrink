@@ -270,7 +270,7 @@ fn collect_records(
         };
         records.push(record);
     }
-    Ok(records)
+    Ok(records.into_iter().rev().collect())
 }
 
 fn revs_since(
