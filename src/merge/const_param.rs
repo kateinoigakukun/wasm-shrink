@@ -564,6 +564,24 @@ impl ConstDiff {
             ConstDiff::ConstF64(_) => ValType::F64,
         }
     }
+
+    /// Return true if this diff can be omitted
+    fn is_eligible_to_share(&self) -> bool {
+        fn is_all_same<T: Eq>(vs: &Vec<T>) -> bool {
+            let mut vs = vs.iter();
+            if let Some(first) = vs.next() {
+                vs.all(|v| v == first)
+            } else {
+                true
+            }
+        }
+        match self {
+            ConstDiff::ConstI32(vs) => is_all_same(vs),
+            ConstDiff::ConstI64(vs) => is_all_same(vs),
+            ConstDiff::ConstF32(vs) => is_all_same(vs),
+            ConstDiff::ConstF64(vs) => is_all_same(vs),
+        }
+    }
 }
 
 fn consts_diff(primary: &Instr, siblings: Vec<&Instr>) -> Option<ConstDiff> {
@@ -609,6 +627,11 @@ fn consts_diff(primary: &Instr, siblings: Vec<&Instr>) -> Option<ConstDiff> {
             _ => return None,
         }
     }
+
+    if diff.is_eligible_to_share() {
+        return None;
+    }
+
     Some(diff)
 }
 
@@ -1257,6 +1280,36 @@ mod tests {
         assert_eq!(param.uses.len(), 2);
         let param_positions: Vec<_> = param.uses.iter().map(|u| u.position).collect();
         assert_eq!(param_positions, vec![0, 2]);
+    }
+
+    #[test]
+    fn test_derive_params_shared_const() {
+        let mut module = walrus::Module::default();
+        let mut f1_builder = FunctionBuilder::new(&mut module.types, &[], &[]);
+        f1_builder
+            .func_body()
+            .i32_const(43) // should be shared
+            .drop()
+            .i32_const(42)
+            .drop();
+        f1_builder.finish(vec![], &mut module.funcs);
+
+        let mut f2_builder = FunctionBuilder::new(&mut module.types, &[], &[]);
+        f2_builder
+            .func_body()
+            .i32_const(43) // should be shared
+            .drop()
+            .i32_const(43)
+            .drop();
+        f2_builder.finish(vec![], &mut module.funcs);
+
+        let classes = collect_equivalence_class(&module);
+        let class = classes.get(0).unwrap();
+
+        let params = derive_params(class, &module).unwrap();
+        assert_eq!(params.len(), 1);
+        let param = params.get(0).unwrap();
+        assert_eq!(param.uses.len(), 1);
     }
 
     #[test]
