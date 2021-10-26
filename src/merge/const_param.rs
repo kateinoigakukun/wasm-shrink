@@ -21,7 +21,7 @@ use walrus::{
 use crate::merge::call_graph::CallGraph;
 use crate::merge::{func_hash, replace};
 
-#[derive(PartialEq, Eq, Debug, Hash, Clone, Copy)]
+#[derive(PartialEq, Eq, Debug, Hash, Clone, Copy, PartialOrd, Ord)]
 struct FunctionHash(u64);
 
 impl FunctionHash {
@@ -130,12 +130,21 @@ fn collect_equivalence_class(module: &walrus::Module) -> Vec<EquivalenceClass> {
         }
     }
 
+    // sort entries to produce reproducible binary for debug purpose
+    #[cfg(debug_assertions)]
+    let hashed_group = {
+        let mut group = hashed_group.into_iter().collect::<Vec<_>>();
+        group.sort_by_cached_key(|(k, _)| *k);
+        group
+    };
+
     let mut fn_classes: Vec<EquivalenceClass> = vec![];
 
     for (key, group) in hashed_group {
         if group.len() < 2 {
             continue;
         }
+
         let mut classes: Vec<EquivalenceClass> = vec![EquivalenceClass {
             primary_func: group[0].id(),
             funcs: vec![],
