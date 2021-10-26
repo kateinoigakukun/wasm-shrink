@@ -5,6 +5,7 @@
 //! - Merge functions bottom-up in call graph
 //! - Allow direct callee difference
 
+use std::collections::HashSet;
 use std::collections::{hash_map::DefaultHasher, HashMap};
 use std::hash::{Hash, Hasher};
 use std::ops::Deref;
@@ -196,8 +197,33 @@ fn try_merge_equivalence_class(
         return;
     }
 
+    let primary_func = class.primary_func(module);
+    let (has_benefit, removed_instrs, added_instrs) =
+        params.has_merge_benefit(primary_func.kind.unwrap_local());
+    log::debug!(
+        "MERGE-BENEFIT-SCORE: primary_name='{}' removed={}, added={}",
+        primary_func
+            .name
+            .as_ref()
+            .map(String::as_str)
+            .unwrap_or("unknown"),
+        removed_instrs,
+        added_instrs
+    );
+    if !has_benefit {
+        log::debug!(
+            "skip merging '{}' based on merge-benefit",
+            primary_func
+                .name
+                .as_ref()
+                .map(String::as_str)
+                .unwrap_or("unknown"),
+        );
+        return;
+    }
+
     let (original_param_tys, original_result_tys) = {
-        let (params, results) = module.types.params_results(class.primary_func(module).ty());
+        let (params, results) = module.types.params_results(primary_func.ty());
         (params.to_vec(), results.to_vec())
     };
 
@@ -265,6 +291,30 @@ impl ParamInfos {
             }
         }
         None
+    }
+
+    fn has_merge_benefit(&self, primary_func: &walrus::LocalFunction) -> (bool, u64, u64) {
+        let func_count = self.0.first().map(|param| param.values.values_len());
+        if let Some(func_count) = func_count {
+            let unique_func_count = (0..func_count)
+                .map(|func_idx| {
+                    self.0
+                        .iter()
+                        .map(|p| p.values.as_value(func_idx))
+                        .collect::<Vec<_>>()
+                })
+                .collect::<HashSet<_>>()
+                .len();
+            let merged_func_count = func_count as u64;
+            // -1 for cloned primary func
+            let removed_instrs = primary_func.size() * (merged_func_count - 1);
+            let params_count = self.len();
+            // +1 means call instruction
+            let added_instrs = ((params_count + 1) * unique_func_count) as u64;
+            (added_instrs < removed_instrs, removed_instrs, added_instrs)
+        } else {
+            (false, 0, 0)
+        }
     }
 }
 
@@ -566,6 +616,15 @@ impl ConstDiff {
             ConstDiff::ConstI64(_) => ValType::I64,
             ConstDiff::ConstF32(_) => ValType::F32,
             ConstDiff::ConstF64(_) => ValType::F64,
+        }
+    }
+
+    fn values_len(&self) -> usize {
+        match self {
+            ConstDiff::ConstI32(vs) => vs.len(),
+            ConstDiff::ConstI64(vs) => vs.len(),
+            ConstDiff::ConstF32(vs) => vs.len(),
+            ConstDiff::ConstF64(vs) => vs.len(),
         }
     }
 
@@ -1419,6 +1478,32 @@ mod tests {
         merge_funcs(&mut module);
 
         assert_eq!(module.funcs.iter().count(), 1);
+    }
+
+    #[test]
+    fn test_merge_benefit() {
+        let mut module = walrus::Module::default();
+
+        // When thunks have many const params and the original func is small
+        let mut f1_builder = FunctionBuilder::new(&mut module.types, &[], &[]);
+        f1_builder.func_body().i32_const(1).i32_const(2).drop();
+        let f1 = f1_builder.finish(vec![], &mut module.funcs);
+
+        let mut f2_builder = FunctionBuilder::new(&mut module.types, &[], &[]);
+        f2_builder.func_body().i32_const(2).i32_const(3).drop();
+        f2_builder.finish(vec![], &mut module.funcs);
+
+        let classes = collect_equivalence_class(&module);
+        let class = classes.get(0).unwrap();
+
+        let params = derive_params(class, &module).unwrap();
+
+        let f1 = module.funcs.get(f1).kind.unwrap_local();
+        let (has_benefit, removed_instrs, added_instrs) = params.has_merge_benefit(f1);
+
+        assert!(!has_benefit);
+        assert_eq!(removed_instrs, 3);
+        assert_eq!(added_instrs, 6);
     }
 
     fn find_tool<P>(exe_name: P) -> Option<PathBuf>
