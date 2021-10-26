@@ -1,5 +1,5 @@
 function humanReadableFileSize(bytes) {
-    const units = ['B', 'kB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB', 'YB'];
+    const units = ["B", "kB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB"];
     let unitIndex = 0;
 
     while (Math.round(bytes) >= 1024 && unitIndex < units.length) {
@@ -7,11 +7,11 @@ function humanReadableFileSize(bytes) {
         ++unitIndex;
     }
 
-    return (Math.round(bytes * 100) / 100) + ' ' + units[unitIndex];
+    return (Math.round(bytes * 100) / 100) + " " + units[unitIndex];
 }
 
 async function start() {
-    const response = await fetch('./data/swift-hello.wasm.json');
+    const response = await fetch("./data/swift-hello.wasm.json");
     const json = await response.json();
 
     const records = json.records.reverse();
@@ -24,7 +24,10 @@ async function start() {
         return { name: strategy, data }
     });
 
-    Highcharts.chart('container', {
+    Highcharts.chart("chart", {
+        chart: {
+            zoomType: "x"
+        },
         title: {
             text: json.name
         },
@@ -48,11 +51,11 @@ async function start() {
                 return `size: ${this.y}<br>rate: ${this.point.rate}<br>date: ${this.point.date}<br>rev: <a href=${commitLink} target="_blank" > ${this.point.rev}</a>`;
             },
             style: {
-                pointerEvents: 'auto',
+                pointerEvents: "auto",
             }
         },
         series
     });
 }
 
-document.addEventListener('DOMContentLoaded', start);
+document.addEventListener("DOMContentLoaded", start);
