@@ -1,4 +1,6 @@
 /target
 /tracker/html/data/*.json
+/tracker/fixture/*.wasm.opt
+/tracker/fixture/*.wasm.opt.wat
 # macOS's Instruments.app artifacts
 *.trace
