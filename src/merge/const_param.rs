@@ -1,7 +1,6 @@
 //! Constant Parameterization
 //!
 //! ## TODO
-//! - Create thunk based on merge-benefit
 //! - Merge functions bottom-up in call graph
 //! - Allow direct callee difference
 
