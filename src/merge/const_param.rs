@@ -209,20 +209,28 @@ fn try_merge_equivalence_class(
         .map(|param| param.values)
         .collect::<Vec<_>>();
 
-    let mut thunk_map = HashMap::new();
+    let mut thunk_map = HashMap::<FunctionId, FunctionId>::new();
+    let mut merged_map = HashMap::<Vec<Value>, FunctionId>::new();
 
     for (idx, from) in class.funcs.iter().enumerate() {
         let name = module.funcs.get(*from).name.as_ref().map(String::as_str);
+        let params = params.iter().map(|v| v.as_value(idx)).collect::<Vec<_>>();
+
+        if let Some(existing_thunk) = merged_map.get(&params) {
+            thunk_map.insert(*from, *existing_thunk);
+            continue;
+        }
+
         let thunk_id = create_thunk_func(
             class.thunk_func_name(name),
             &original_param_tys,
             &original_result_tys,
             merged_func,
             &params,
-            idx,
             module,
         );
         thunk_map.insert(*from, thunk_id);
+        merged_map.insert(params, thunk_id);
         call_graph.add_function(thunk_id, module.funcs.get(thunk_id).kind.unwrap_local());
     }
 
@@ -448,8 +456,7 @@ fn create_thunk_func(
     original_param_tys: &[ValType],
     original_result_tys: &[ValType],
     merged_func: FunctionId,
-    params: &[ConstDiff],
-    idx: usize,
+    params: &[walrus::ir::Value],
     module: &mut walrus::Module,
 ) -> FunctionId {
     let mut builder =
@@ -469,24 +476,7 @@ fn create_thunk_func(
     }
 
     for param in params {
-        match param {
-            ConstDiff::ConstI32(vs) => {
-                let v = vs[idx];
-                body.i32_const(v);
-            }
-            ConstDiff::ConstI64(vs) => {
-                let v = vs[idx];
-                body.i64_const(v);
-            }
-            ConstDiff::ConstF32(vs) => {
-                let v = vs[idx];
-                body.f32_const_exact(v);
-            }
-            ConstDiff::ConstF64(vs) => {
-                let v = vs[idx];
-                body.f64_const_exact(v);
-            }
-        }
+        body.const_(*param);
     }
 
     body.call(merged_func);
@@ -585,6 +575,27 @@ impl ConstDiff {
             ConstDiff::ConstI64(vs) => is_all_same(vs),
             ConstDiff::ConstF32(vs) => is_all_same(vs),
             ConstDiff::ConstF64(vs) => is_all_same(vs),
+        }
+    }
+
+    fn as_value(&self, idx: usize) -> walrus::ir::Value {
+        match self {
+            ConstDiff::ConstI32(vs) => {
+                let v = vs[idx];
+                Value::I32(v)
+            }
+            ConstDiff::ConstI64(vs) => {
+                let v = vs[idx];
+                Value::I64(v)
+            }
+            ConstDiff::ConstF32(vs) => {
+                let v = vs[idx];
+                Value::F32(v)
+            }
+            ConstDiff::ConstF64(vs) => {
+                let v = vs[idx];
+                Value::F64(v)
+            }
         }
     }
 }
@@ -1363,14 +1374,13 @@ mod tests {
 
         let merged_func = merged.finish(vec![arg, parameterized], &mut module.funcs);
 
-        let params = vec![ConstDiff::ConstI32(vec![42])];
+        let params = vec![Value::I32(42)];
         let thunk = create_thunk_func(
             None,
             &[ValType::I32],
             &[ValType::I32],
             merged_func,
             &params,
-            0,
             &mut module,
         );
         let thunk = module.funcs.get(thunk).kind.unwrap_local();
@@ -1397,7 +1407,6 @@ mod tests {
         let mut f2_builder = FunctionBuilder::new(&mut module.types, &[], &[]);
         f2_builder.func_body().i32_const(43).drop();
         f2_builder.finish(vec![], &mut module.funcs);
-
     }
 
     fn find_tool<P>(exe_name: P) -> Option<PathBuf>
