@@ -1398,15 +1398,18 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_funcs_0() {
+    fn test_merge_funcs_exactly_same() {
         let mut module = walrus::Module::default();
         let mut f1_builder = FunctionBuilder::new(&mut module.types, &[], &[]);
         f1_builder.func_body().i32_const(42).drop();
         f1_builder.finish(vec![], &mut module.funcs);
 
         let mut f2_builder = FunctionBuilder::new(&mut module.types, &[], &[]);
-        f2_builder.func_body().i32_const(43).drop();
+        f2_builder.func_body().i32_const(42).drop();
         f2_builder.finish(vec![], &mut module.funcs);
+        merge_funcs(&mut module);
+
+        assert_eq!(module.funcs.iter().count(), 1);
     }
 
     fn find_tool<P>(exe_name: P) -> Option<PathBuf>
