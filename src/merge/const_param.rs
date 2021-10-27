@@ -4,7 +4,6 @@
 //! - Merge functions bottom-up in call graph
 //! - Allow direct callee difference
 
-use std::collections::HashSet;
 use std::collections::{hash_map::DefaultHasher, HashMap};
 use std::hash::{Hash, Hasher};
 use std::ops::Deref;
@@ -19,6 +18,7 @@ use walrus::{
 };
 
 use crate::merge::call_graph::CallGraph;
+use crate::merge::estimate::estimate_func_byte;
 use crate::merge::{func_hash, replace};
 
 #[derive(PartialEq, Eq, Debug, Hash, Clone, Copy, PartialOrd, Ord)]
@@ -218,8 +218,10 @@ fn try_merge_equivalence_class(
             replace_map.insert(*from, class.primary_func);
             log::debug!(
                 "MERGE-ALL-TO-ONE: '{}' ({:?}) to '{}' ({:?})",
-                func_display_name(module.funcs.get(*from)), *from,
-                func_display_name(class.primary_func(module)), class.primary_func
+                func_display_name(module.funcs.get(*from)),
+                *from,
+                func_display_name(class.primary_func(module)),
+                class.primary_func
             );
         }
         replace::replace_funcs(&replace_map, module, call_graph);
@@ -231,15 +233,22 @@ fn try_merge_equivalence_class(
     for (from, to) in replace_map.iter() {
         log::debug!(
             "REPLACE-BY-DUP: '{}' ({:?}) to '{}' ({:?})",
-            func_display_name(module.funcs.get(*from)), *from,
-            func_display_name(module.funcs.get(*to)), *to
+            func_display_name(module.funcs.get(*from)),
+            *from,
+            func_display_name(module.funcs.get(*to)),
+            *to
         );
     }
     replace::replace_funcs(&replace_map, module, call_graph);
 
     let primary_func = class.primary_func(module);
+    let (original_param_tys, original_result_tys) = {
+        let (params, results) = module.types.params_results(primary_func.ty());
+        (params.to_vec(), results.to_vec())
+    };
+
     let (has_benefit, removed_instrs, added_instrs) =
-        params.has_merge_benefit(primary_func.kind.unwrap_local());
+        params.has_merge_benefit(primary_func.kind.unwrap_local(), original_param_tys.len());
     log::debug!(
         "MERGE-BENEFIT-SCORE: primary_name='{}' removed={}, added={}",
         func_display_name(primary_func),
@@ -253,11 +262,6 @@ fn try_merge_equivalence_class(
         );
         return;
     }
-
-    let (original_param_tys, original_result_tys) = {
-        let (params, results) = module.types.params_results(primary_func.ty());
-        (params.to_vec(), results.to_vec())
-    };
 
     let merged_func = create_merged_func(
         class.remangle_merged_func(&module),
@@ -293,7 +297,8 @@ fn try_merge_equivalence_class(
         replace_map.insert(*from, thunk_id);
         log::debug!(
             "REPLACE-BY-THUNK: '{}' ({:?}) to thunk ({:?})",
-            func_display_name(module.funcs.get(*from)), *from,
+            func_display_name(module.funcs.get(*from)),
+            *from,
             thunk_id.clone()
         );
         call_graph.add_function(thunk_id, module.funcs.get(thunk_id).kind.unwrap_local());
@@ -323,44 +328,50 @@ impl ParamInfos {
         None
     }
 
-    fn has_merge_benefit(&self, primary_func: &walrus::LocalFunction) -> (bool, u64, u64) {
+    fn has_merge_benefit(
+        &self,
+        primary_func: &walrus::LocalFunction,
+        original_param_len: usize,
+    ) -> (bool, u64, u64) {
         let func_count = self.0.first().map(|param| param.values.values_len());
-        if let Some(func_count) = func_count {
-            let unique_func_count = (0..func_count)
-                .map(|func_idx| {
-                    self.0
-                        .iter()
-                        .map(|p| p.values.as_value(func_idx))
-                        .collect::<Vec<_>>()
-                })
-                .collect::<HashSet<_>>()
-                .len() as u64;
-            let merged_func_count = func_count as u64;
-            // -1 for cloned primary func
-            let removed_instrs = primary_func.size() * (merged_func_count - 1);
-            let params_count = self.len() as u64;
-            let args_count = primary_func.args.len() as u64;
-            // +2 means call and end instruction
-            let added_instrs = (args_count + params_count + 2) * unique_func_count;
-            const CODE_SEC_LOCALS_WEIGHT: u64 = 2;
-            const CODE_SEC_ENTRY_WEIGHT: u64 = 3;
-            const FUNC_SEC_ENTRY_WEIGHT: u64 = 2;
+        let func_count = match func_count {
+            Some(func_count) => func_count,
+            None => return (false, 0, 0),
+        };
 
-            // https://webassembly.github.io/spec/core/binary/modules.html#code-section
-            let negative_score = added_instrs
-                + ((params_count * CODE_SEC_LOCALS_WEIGHT
-                    + FUNC_SEC_ENTRY_WEIGHT
-                    + CODE_SEC_ENTRY_WEIGHT)
-                    * unique_func_count);
-            let positive_score = removed_instrs * 3 / 2;
-            (
-                negative_score < positive_score,
-                positive_score,
-                negative_score,
-            )
-        } else {
-            (false, 0, 0)
+        let mut added_bytes = 0;
+        for func_idx in 0..func_count {
+            let params = self
+                .0
+                .iter()
+                .map(|p| p.values.as_value(func_idx))
+                .collect::<Vec<_>>();
+            let size = estimate_thunk_func_byte_size(original_param_len, &params);
+            added_bytes += size;
+            log::debug!("ESTIMATED-THUNK-SIZE: {}", size);
         }
+
+        let primary_func_bytes = estimate_func_byte(primary_func);
+        log::debug!("REMOVED-BYTES-PER-FUNC: {}", primary_func_bytes);
+        // -1 for cloned primary func
+        let removed_bytes = (primary_func_bytes * (func_count - 1)) as u64;
+
+        let params_count = self.len() as u64;
+        let args_count = params_count + primary_func.args.len() as u64;
+
+        const CODE_SEC_LOCALS_WEIGHT: u64 = 10;
+        const CODE_SEC_ENTRY_WEIGHT: u64 = 10;
+        const FUNC_SEC_ENTRY_WEIGHT: u64 = 5;
+
+        // https://webassembly.github.io/spec/core/binary/modules.html#code-section
+        let negative_score = (added_bytes as u64)
+            + (args_count * CODE_SEC_LOCALS_WEIGHT + FUNC_SEC_ENTRY_WEIGHT + CODE_SEC_ENTRY_WEIGHT);
+        let positive_score = removed_bytes;
+        (
+            negative_score < positive_score,
+            positive_score,
+            negative_score,
+        )
     }
 }
 
@@ -554,6 +565,44 @@ fn create_merged_func(
     module: &mut walrus::Module,
 ) -> walrus::FunctionId {
     Cloner::clone(name, primary_func, params, module)
+}
+
+fn estimate_thunk_func_byte_size(original_param_len: usize, params: &[walrus::ir::Value]) -> usize {
+    let mut instrs_size = 0;
+
+    // https://webassembly.github.io/spec/core/binary/instructions.html#variable-instructions
+    for _ in 0..original_param_len {
+        // opcode
+        instrs_size += 1;
+        // ARBITRARY ESTIMATION: assume that most of local indices are less than 1 byte in leb128
+        instrs_size += 1;
+    }
+
+    // https://webassembly.github.io/spec/core/binary/instructions.html#numeric-instructions
+    for param in params {
+        let mut buf = [0u8; 10];
+        let mut writable = &mut buf[..];
+        let operand_size = match *param {
+            Value::I32(v) => {
+                leb128::write::signed(&mut writable, v as i64).expect("not enough buffer?")
+            }
+            Value::I64(v) => leb128::write::signed(&mut writable, v).expect("not enough buffer?"),
+            Value::F32(_) => 4,
+            Value::F64(_) => 8,
+            Value::V128(_) => 16,
+        };
+        instrs_size += 1; // opcode
+        instrs_size += operand_size;
+    }
+
+    // call instr
+    // opcode
+    instrs_size += 1;
+    // ARBITRARY ESTIMATION: assume that most of merged shared functions should be put at the head
+    // because walrus sorts functions by their sizes. assume func indices are less than 16384
+    instrs_size += 2;
+
+    instrs_size
 }
 
 fn create_thunk_func(
@@ -1562,7 +1611,7 @@ mod tests {
         let params = derive_params(class, &module).unwrap();
 
         let f1 = module.funcs.get(f1).kind.unwrap_local();
-        let (has_benefit, _, _) = params.has_merge_benefit(f1);
+        let (has_benefit, _, _) = params.has_merge_benefit(f1, 0);
 
         assert!(!has_benefit);
     }
