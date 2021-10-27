@@ -77,6 +77,10 @@ impl EquivalenceClass {
     }
 }
 
+fn func_display_name(f: &walrus::Function) -> &str {
+    f.name.as_ref().map(String::as_str).unwrap_or("unknown")
+}
+
 pub fn merge_funcs(module: &mut walrus::Module) {
     let mut call_graph = CallGraph::build_from(module);
     let fn_classes = collect_equivalence_class(module);
@@ -89,29 +93,18 @@ pub fn merge_funcs(module: &mut walrus::Module) {
         }
         log::debug!(
             "EC: primary={}, hash={:?}",
-            class
-                .primary_func(&module)
-                .name
-                .as_ref()
-                .map(String::as_str)
-                .unwrap_or("unknown"),
+            func_display_name(class.primary_func(&module)),
             class.hash
         );
         for fn_id in class.funcs.iter().skip(1) {
-            let fn_entry = module.funcs.get(*fn_id);
-            let name = fn_entry
-                .name
-                .as_ref()
-                .map(String::as_str)
-                .unwrap_or("unknown");
-            log::debug!(" - {}", name);
+            log::debug!(" - {}", func_display_name(module.funcs.get(*fn_id)));
         }
         mergable_funcs += class.funcs.len() - 1;
     }
     log::debug!("mergable_funcs = {}", mergable_funcs);
 
     for class in fn_classes {
-        try_merge_equivalence_class(&class, module, &mut call_graph);
+        try_merge_equivalence_class(class, module, &mut call_graph);
     }
 }
 
@@ -174,12 +167,44 @@ fn collect_equivalence_class(module: &walrus::Module) -> Vec<EquivalenceClass> {
     fn_classes
 }
 
+fn reduce_duplicates(
+    class: &mut EquivalenceClass,
+    params: &mut ParamInfos,
+) -> HashMap<FunctionId, FunctionId> {
+    let mut replace_map = HashMap::<FunctionId, FunctionId>::new();
+    let mut visited = HashMap::<Vec<Value>, FunctionId>::new();
+    let mut removed = vec![];
+
+    for (idx, func) in class.funcs.iter().enumerate() {
+        let params = params
+            .iter()
+            .map(|v| v.values.as_value(idx))
+            .collect::<Vec<_>>();
+
+        if let Some(existing) = visited.get(&params) {
+            replace_map.insert(*func, *existing);
+            removed.push(idx);
+            continue;
+        } else {
+            visited.insert(params, *func);
+        }
+    }
+
+    for idx in removed.into_iter().rev() {
+        class.funcs.remove(idx);
+        for param in params.0.iter_mut() {
+            param.values.remove_value(idx);
+        }
+    }
+    replace_map
+}
+
 fn try_merge_equivalence_class(
-    class: &EquivalenceClass,
+    mut class: EquivalenceClass,
     module: &mut walrus::Module,
     call_graph: &mut CallGraph,
 ) {
-    let params = match derive_params(class, module) {
+    let mut params = match derive_params(&class, module) {
         Some(params) => params,
         None => {
             log::warn!("derive_params returns None unexpectedly for {:?}", class);
@@ -188,35 +213,43 @@ fn try_merge_equivalence_class(
     };
 
     if params.is_empty() {
-        let mut thunk_map = HashMap::new();
+        let mut replace_map = HashMap::new();
         for from in class.funcs.iter().skip(1) {
-            thunk_map.insert(*from, class.primary_func);
+            replace_map.insert(*from, class.primary_func);
+            log::debug!(
+                "MERGE-ALL-TO-ONE: '{}' ({:?}) to '{}' ({:?})",
+                func_display_name(module.funcs.get(*from)), *from,
+                func_display_name(class.primary_func(module)), class.primary_func
+            );
         }
-        replace::replace_funcs(&thunk_map, module, call_graph);
+        replace::replace_funcs(&replace_map, module, call_graph);
         return;
+    };
+
+    // First, replace duplicated functions because it always has some benefits
+    let replace_map = reduce_duplicates(&mut class, &mut params);
+    for (from, to) in replace_map.iter() {
+        log::debug!(
+            "REPLACE-BY-DUP: '{}' ({:?}) to '{}' ({:?})",
+            func_display_name(module.funcs.get(*from)), *from,
+            func_display_name(module.funcs.get(*to)), *to
+        );
     }
+    replace::replace_funcs(&replace_map, module, call_graph);
 
     let primary_func = class.primary_func(module);
     let (has_benefit, removed_instrs, added_instrs) =
         params.has_merge_benefit(primary_func.kind.unwrap_local());
     log::debug!(
         "MERGE-BENEFIT-SCORE: primary_name='{}' removed={}, added={}",
-        primary_func
-            .name
-            .as_ref()
-            .map(String::as_str)
-            .unwrap_or("unknown"),
+        func_display_name(primary_func),
         removed_instrs,
         added_instrs
     );
     if !has_benefit {
         log::debug!(
-            "skip merging '{}' based on merge-benefit",
-            primary_func
-                .name
-                .as_ref()
-                .map(String::as_str)
-                .unwrap_or("unknown"),
+            "SKIP-MERGING: '{}' based on merge-benefit",
+            func_display_name(primary_func)
         );
         return;
     }
@@ -243,32 +276,30 @@ fn try_merge_equivalence_class(
         .map(|param| param.values)
         .collect::<Vec<_>>();
 
-    let mut thunk_map = HashMap::<FunctionId, FunctionId>::new();
-    let mut merged_map = HashMap::<Vec<Value>, FunctionId>::new();
+    let mut replace_map = HashMap::default();
 
     for (idx, from) in class.funcs.iter().enumerate() {
         let name = module.funcs.get(*from).name.as_ref().map(String::as_str);
         let params = params.iter().map(|v| v.as_value(idx)).collect::<Vec<_>>();
 
-        if let Some(existing_thunk) = merged_map.get(&params) {
-            thunk_map.insert(*from, *existing_thunk);
-            continue;
-        }
-
         let thunk_id = create_thunk_func(
-            class.thunk_func_name(name),
+            class.thunk_func_name(name.clone()),
             &original_param_tys,
             &original_result_tys,
             merged_func,
             &params,
             module,
         );
-        thunk_map.insert(*from, thunk_id);
-        merged_map.insert(params, thunk_id);
+        replace_map.insert(*from, thunk_id);
+        log::debug!(
+            "REPLACE-BY-THUNK: '{}' ({:?}) to thunk ({:?})",
+            func_display_name(module.funcs.get(*from)), *from,
+            thunk_id.clone()
+        );
         call_graph.add_function(thunk_id, module.funcs.get(thunk_id).kind.unwrap_local());
     }
 
-    replace::replace_funcs(&thunk_map, module, call_graph);
+    replace::replace_funcs(&replace_map, module, call_graph);
 }
 
 struct ParamInfos(Vec<ParamInfo>);
@@ -303,14 +334,30 @@ impl ParamInfos {
                         .collect::<Vec<_>>()
                 })
                 .collect::<HashSet<_>>()
-                .len();
+                .len() as u64;
             let merged_func_count = func_count as u64;
             // -1 for cloned primary func
             let removed_instrs = primary_func.size() * (merged_func_count - 1);
-            let params_count = self.len();
-            // +1 means call instruction
-            let added_instrs = ((params_count + 1) * unique_func_count) as u64;
-            (added_instrs < removed_instrs, removed_instrs, added_instrs)
+            let params_count = self.len() as u64;
+            let args_count = primary_func.args.len() as u64;
+            // +2 means call and end instruction
+            let added_instrs = (args_count + params_count + 2) * unique_func_count;
+            const CODE_SEC_LOCALS_WEIGHT: u64 = 2;
+            const CODE_SEC_ENTRY_WEIGHT: u64 = 3;
+            const FUNC_SEC_ENTRY_WEIGHT: u64 = 2;
+
+            // https://webassembly.github.io/spec/core/binary/modules.html#code-section
+            let negative_score = added_instrs
+                + ((params_count * CODE_SEC_LOCALS_WEIGHT
+                    + FUNC_SEC_ENTRY_WEIGHT
+                    + CODE_SEC_ENTRY_WEIGHT)
+                    * unique_func_count);
+            let positive_score = removed_instrs * 3 / 2;
+            (
+                negative_score < positive_score,
+                positive_score,
+                negative_score,
+            )
         } else {
             (false, 0, 0)
         }
@@ -624,6 +671,23 @@ impl ConstDiff {
             ConstDiff::ConstI64(vs) => vs.len(),
             ConstDiff::ConstF32(vs) => vs.len(),
             ConstDiff::ConstF64(vs) => vs.len(),
+        }
+    }
+
+    fn remove_value(&mut self, index: usize) {
+        match self {
+            ConstDiff::ConstI32(vs) => {
+                vs.remove(index);
+            }
+            ConstDiff::ConstI64(vs) => {
+                vs.remove(index);
+            }
+            ConstDiff::ConstF32(vs) => {
+                vs.remove(index);
+            }
+            ConstDiff::ConstF64(vs) => {
+                vs.remove(index);
+            }
         }
     }
 
@@ -1498,11 +1562,9 @@ mod tests {
         let params = derive_params(class, &module).unwrap();
 
         let f1 = module.funcs.get(f1).kind.unwrap_local();
-        let (has_benefit, removed_instrs, added_instrs) = params.has_merge_benefit(f1);
+        let (has_benefit, _, _) = params.has_merge_benefit(f1);
 
         assert!(!has_benefit);
-        assert_eq!(removed_instrs, 3);
-        assert_eq!(added_instrs, 6);
     }
 
     fn find_tool<P>(exe_name: P) -> Option<PathBuf>

@@ -1,6 +1,6 @@
+use crate::merge::call_graph::{CallGraph, FunctionUse};
 use std::collections::{HashMap, HashSet};
 use walrus::{ir::VisitorMut, ExportItem};
-use crate::merge::call_graph::{CallGraph, FunctionUse};
 
 struct Replacer<'a> {
     replacing_map: &'a HashMap<walrus::FunctionId, walrus::FunctionId>,
@@ -52,6 +52,28 @@ pub fn replace_funcs(
         let func = module.funcs.get_mut(*func).kind.unwrap_local_mut();
         let entry = func.entry_block();
         walrus::ir::dfs_pre_order_mut(&mut Replacer { replacing_map: map }, func, entry);
+    }
+
+    // Add replaced use edges to the graph
+    for (from, to) in map.iter() {
+        let uses = match call_graph.get_func_uses(from) {
+            Some(uses) => uses.clone(),
+            None => continue,
+        };
+
+        for func_use in uses {
+            match func_use {
+                FunctionUse::Call { caller } => {
+                    call_graph.add_use(*to, FunctionUse::Call { caller });
+                }
+                FunctionUse::InElement { element, index } => {
+                    call_graph.add_use(*to, FunctionUse::InElement { element, index });
+                }
+                FunctionUse::Export { export } => {
+                    call_graph.add_use(*to, FunctionUse::Export { export });
+                }
+            }
+        }
     }
 
     for (from, _) in map.iter() {

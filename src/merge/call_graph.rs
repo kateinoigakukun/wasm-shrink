@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use walrus::{ElementId, ExportId, FunctionId};
 
-#[derive(Debug, Hash, PartialEq, Eq)]
+#[derive(Debug, Hash, PartialEq, Eq, Clone)]
 pub enum FunctionUse {
     Call { caller: FunctionId },
     InElement { element: ElementId, index: usize },
@@ -81,7 +81,7 @@ impl CallGraph {
         walrus::ir::dfs_in_order(&mut deleter, local_func, local_func.entry_block());
     }
 
-    fn add_use(&mut self, callee: FunctionId, use_entry: FunctionUse) {
+    pub fn add_use(&mut self, callee: FunctionId, use_entry: FunctionUse) {
         self.callee_to_uses
             .entry(callee)
             .or_default()
