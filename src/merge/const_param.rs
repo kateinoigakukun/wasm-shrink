@@ -42,6 +42,16 @@ impl FunctionHash {
     }
 }
 
+#[derive(Debug, Default)]
+struct Stats {
+    merged_count: usize,
+    all_to_one_count: usize,
+    reduce_dup_count: usize,
+    thunk_count: usize,
+    skip_by_benefit_count: usize,
+    no_derived_param_count: usize,
+}
+
 #[derive(Debug)]
 struct EquivalenceClass {
     primary_func: FunctionId,
@@ -103,9 +113,11 @@ pub fn merge_funcs(module: &mut walrus::Module) {
     }
     log::debug!("mergable_funcs = {}", mergable_funcs);
 
+    let mut stats = Stats::default();
     for class in fn_classes {
-        try_merge_equivalence_class(class, module, &mut call_graph);
+        try_merge_equivalence_class(class, module, &mut call_graph, &mut stats);
     }
+    log::debug!("MERGE-STATS: {:?}", stats);
 }
 
 fn collect_equivalence_class(module: &walrus::Module) -> Vec<EquivalenceClass> {
@@ -203,10 +215,12 @@ fn try_merge_equivalence_class(
     mut class: EquivalenceClass,
     module: &mut walrus::Module,
     call_graph: &mut CallGraph,
+    stats: &mut Stats,
 ) {
     let mut params = match derive_params(&class, module) {
         Some(params) => params,
         None => {
+            stats.no_derived_param_count += class.funcs.len();
             log::warn!("derive_params returns None unexpectedly for {:?}", class);
             return;
         }
@@ -222,6 +236,8 @@ fn try_merge_equivalence_class(
                 func_display_name(class.primary_func(module)), class.primary_func
             );
         }
+        stats.merged_count += replace_map.len();
+        stats.all_to_one_count += replace_map.len();
         replace::replace_funcs(&replace_map, module, call_graph);
         return;
     };
@@ -235,6 +251,8 @@ fn try_merge_equivalence_class(
             func_display_name(module.funcs.get(*to)), *to
         );
     }
+    stats.merged_count += replace_map.len();
+    stats.reduce_dup_count += replace_map.len();
     replace::replace_funcs(&replace_map, module, call_graph);
 
     let primary_func = class.primary_func(module);
@@ -251,6 +269,7 @@ fn try_merge_equivalence_class(
             "SKIP-MERGING: '{}' based on merge-benefit",
             func_display_name(primary_func)
         );
+        stats.skip_by_benefit_count += class.funcs.len();
         return;
     }
 
@@ -298,7 +317,8 @@ fn try_merge_equivalence_class(
         );
         call_graph.add_function(thunk_id, module.funcs.get(thunk_id).kind.unwrap_local());
     }
-
+    stats.merged_count += replace_map.len();
+    stats.thunk_count += replace_map.len();
     replace::replace_funcs(&replace_map, module, call_graph);
 }
 
