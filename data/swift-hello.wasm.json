@@ -2,8 +2,8 @@
   "name": "fixture/swift-hello.wasm",
   "records": [
     {
-      "rev": "b792bf43f74b92d375571a1d8164e9c04ef0bab0",
-      "date": "2021-10-27T02:57:29Z",
+      "rev": "cbb83170261a2b34adc1ffd894656cb5822390dd",
+      "date": "2021-10-27T07:50:04Z",
       "sizes": {
         "exact-match": 8906935,
         "const-param": 8100973
@@ -14,6 +14,18 @@
       }
     },
     {
+      "rev": "b792bf43f74b92d375571a1d8164e9c04ef0bab0",
+      "date": "2021-10-27T02:57:29Z",
+      "sizes": {
+        "exact-match": 8906935,
+        "const-param": 8100973
+      },
+      "rates": {
+        "const-param": 0.8426329595716859,
+        "exact-match": 0.9264661170655224
+      }
+    },
+    {
       "rev": "ade549487ef67763701f60e601efdf40e0663971",
       "date": "2021-10-27T01:35:41Z",
       "sizes": {
@@ -21,8 +33,8 @@
         "exact-match": 8906935
       },
       "rates": {
-        "const-param": 0.8426329595716859,
-        "exact-match": 0.9264661170655224
+        "exact-match": 0.9264661170655224,
+        "const-param": 0.8426329595716859
       }
     },
     {
@@ -41,24 +53,24 @@
       "rev": "29439865e86d35c7b2fdbc8925c17a0736c28c48",
       "date": "2021-10-26T14:07:24Z",
       "sizes": {
-        "exact-match": 8906935,
-        "const-param": 8163809
+        "const-param": 8163809,
+        "exact-match": 8906935
       },
       "rates": {
-        "const-param": 0.8491689256399159,
-        "exact-match": 0.9264661170655224
+        "exact-match": 0.9264661170655224,
+        "const-param": 0.8491689256399159
       }
     },
     {
       "rev": "4c3de4ac26ef4fbd3281d5b5ddc085782a6180fb",
       "date": "2021-10-26T13:50:29Z",
       "sizes": {
-        "exact-match": 8906935,
-        "const-param": 8164645
+        "const-param": 8164645,
+        "exact-match": 8906935
       },
       "rates": {
-        "const-param": 0.8492558832379973,
-        "exact-match": 0.9264661170655224
+        "exact-match": 0.9264661170655224,
+        "const-param": 0.8492558832379973
       }
     },
     {
@@ -69,16 +81,16 @@
         "const-param": 8168779
       },
       "rates": {
-        "exact-match": 0.9264661170655224,
-        "const-param": 0.8496858864801842
+        "const-param": 0.8496858864801842,
+        "exact-match": 0.9264661170655224
       }
     },
     {
       "rev": "66810e8ca83b0fce33838c91bd6b6440485328cc",
       "date": "2021-10-26T12:17:37Z",
       "sizes": {
-        "const-param": 8168779,
-        "exact-match": 8906935
+        "exact-match": 8906935,
+        "const-param": 8168779
       },
       "rates": {
         "const-param": 0.8496858864801842,
@@ -105,16 +117,16 @@
         "const-param": 8169041
       },
       "rates": {
-        "const-param": 0.8497131387417839,
-        "exact-match": 0.9264661170655224
+        "exact-match": 0.9264661170655224,
+        "const-param": 0.8497131387417839
       }
     },
     {
       "rev": "4ec3281f25ced9a718fbf45548552aabbcaa957c",
       "date": "2021-10-26T10:52:02Z",
       "sizes": {
-        "const-param": 8168738,
-        "exact-match": 8906935
+        "exact-match": 8906935,
+        "const-param": 8168738
       },
       "rates": {
         "exact-match": 0.9264661170655224,
@@ -141,8 +153,8 @@
         "exact-match": 8906935
       },
       "rates": {
-        "exact-match": 0.9264661170655224,
-        "const-param": 0.8631869897287058
+        "const-param": 0.8631869897287058,
+        "exact-match": 0.9264661170655224
       }
     },
     {
@@ -161,12 +173,12 @@
       "rev": "10b3267410e5917bad2c343d5e9582614418e0b1",
       "date": "2021-10-24T08:44:27Z",
       "sizes": {
-        "const-param": 9166172,
-        "exact-match": 8906935
+        "exact-match": 8906935,
+        "const-param": 9166172
       },
       "rates": {
-        "exact-match": 0.9264661170655224,
-        "const-param": 0.953430981723198
+        "const-param": 0.953430981723198,
+        "exact-match": 0.9264661170655224
       }
     },
     {
@@ -201,8 +213,8 @@
         "const-param": 9166171
       },
       "rates": {
-        "const-param": 0.9534308777069322,
-        "exact-match": 0.9264661170655224
+        "exact-match": 0.9264661170655224,
+        "const-param": 0.9534308777069322
       }
     },
     {
@@ -225,8 +237,8 @@
         "exact-match": 8906935
       },
       "rates": {
-        "exact-match": 0.9264661170655224,
-        "const-param": 1.0009227282925597
+        "const-param": 1.0009227282925597,
+        "exact-match": 0.9264661170655224
       }
     },
     {
@@ -257,12 +269,12 @@
       "rev": "82298a5aeb1fc1e071107a578ed9c7dd4287846a",
       "date": "2021-10-24T03:49:10Z",
       "sizes": {
-        "const-param": 9622752,
-        "exact-match": 8906935
+        "exact-match": 8906935,
+        "const-param": 9622752
       },
       "rates": {
-        "exact-match": 0.9264661170655224,
-        "const-param": 1.0009227282925597
+        "const-param": 1.0009227282925597,
+        "exact-match": 0.9264661170655224
       }
     },
     {
