@@ -21,7 +21,8 @@ fn main() -> anyhow::Result<()> {
     env_logger::init();
     let opt = Opt::from_args();
 
-    let module_config = walrus::ModuleConfig::new();
+    let mut module_config = walrus::ModuleConfig::new();
+    module_config.strict_validate(false);
     let mut module = module_config.parse_file(opt.file)?;
     match opt.merge_strategy.as_str() {
         "exact-match" => merge::exact_match::merge_funcs(&mut module),
