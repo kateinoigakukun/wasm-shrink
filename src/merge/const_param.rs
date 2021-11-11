@@ -1224,14 +1224,14 @@ fn dfs_pre_order_iter<'instr>(
                 }
             }
 
-            let seq_id = match self.seq_stack.pop() {
-                Some(seq_id) => seq_id,
-                None => return None,
-            };
-            let mut seq = self.func.block(seq_id).iter().enumerate();
-            let instr = next_from_seq(&mut seq, seq_id, &mut self.seq_stack);
-            self.current_seq.replace((seq, seq_id));
-            instr
+            while let Some(seq_id) = self.seq_stack.pop() {
+                let mut seq = self.func.block(seq_id).iter().enumerate();
+                if let Some(instr) = next_from_seq(&mut seq, seq_id, &mut self.seq_stack) {
+                    self.current_seq.replace((seq, seq_id));
+                    return Some(instr);
+                }
+            }
+            return None;
         }
     }
     Iter {
@@ -1646,5 +1646,22 @@ mod tests {
     #[test]
     fn test_merge_0() {
         check_no_crash("0.wasm")
+    }
+
+    #[test]
+    fn test_traverse_emtpy_block() {
+        let fixture = PathBuf::from(file!())
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("tracker/fixture");
+        let source = fixture.join("1.wasm");
+        let module = walrus::Module::from_file(source).unwrap();
+        let f = module.functions().next().unwrap().kind.unwrap_local();
+        let instrs = dfs_pre_order_iter(f, f.entry_block()).collect::<Vec<_>>();
+        assert_eq!(instrs.len(), 7, "{:?}", instrs)
     }
 }
