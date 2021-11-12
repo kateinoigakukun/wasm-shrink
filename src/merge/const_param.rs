@@ -205,6 +205,7 @@ struct SecondaryTableBuilder {
 impl SecondaryTableBuilder {
     fn new(module: &mut walrus::Module, features: WasmFeatures) -> Option<Self> {
         if std::env::var("WASM_SHRINK_DISABLE_INDIRECTOR").is_ok() {
+            log::debug!("INDIRECTOR: disabled due to environment variable");
             return None;
         }
         let (table_id, elements_offset) = if features.reference_types {
@@ -230,11 +231,15 @@ impl SecondaryTableBuilder {
                             Value::I64(v) => v as usize,
                             Value::F32(v) => v as usize,
                             Value::F64(v) => v as usize,
-                            Value::V128(_) => return None,
+                            Value::V128(_) => {
+                                log::debug!("INDIRECTOR: disabled due to unsupported init-expr {:?}", init_expr);
+                                return None;
+                            },
                         },
-                        InitExpr::Global(_) => return None,
-                        InitExpr::RefNull(_) => return None,
-                        InitExpr::RefFunc(_) => return None,
+                        InitExpr::Global(_) | InitExpr::RefNull(_) | InitExpr::RefFunc(_) => {
+                            log::debug!("INDIRECTOR: disabled due to unsupported init-expr {:?}", init_expr);
+                            return None;
+                        },
                     };
                     end_offsets.push(offset + len);
                 }
