@@ -196,6 +196,9 @@ struct SecondaryTableBuilder {
 
 impl SecondaryTableBuilder {
     fn new(module: &mut walrus::Module, features: WasmFeatures) -> Option<Self> {
+        if std::env::var("WASM_SHRINK_DISABLE_INDIRECTOR").is_ok() {
+            return None;
+        }
         let (table_id, elements_offset) = if features.reference_types {
             (module.tables.add_local(0, None, ValType::Funcref), 0)
         } else {
@@ -253,9 +256,9 @@ impl SecondaryTableBuilder {
         call_graph: &mut CallGraph,
     ) -> usize {
         let elem = module.elements.get_mut(self.element_id);
+        log::debug!("DIRECT-TO-INDIRECT: {:?} (segment length {})", func_id, elem.members.len());
         let idx = elem.members.len();
         elem.members.push(Some(func_id));
-        let _ = module.funcs.get(func_id);
         call_graph.add_use(
             func_id,
             FunctionUse::InElement {
