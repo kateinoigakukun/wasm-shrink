@@ -95,7 +95,8 @@ fn func_display_name(f: &walrus::Function) -> &str {
 
 pub fn merge_funcs(module: &mut walrus::Module, features: WasmFeatures) {
     let mut call_graph = CallGraph::build_from(module);
-    let fn_classes = collect_equivalence_class(module);
+    let mut table_builder = SecondaryTableBuilder::new(module, features);
+    let fn_classes = collect_equivalence_class(module, table_builder.is_some());
 
     log::debug!("Dump function equivalence classes");
     let mut mergable_funcs = 0;
@@ -116,7 +117,6 @@ pub fn merge_funcs(module: &mut walrus::Module, features: WasmFeatures) {
     log::debug!("mergable_funcs = {}", mergable_funcs);
 
     let mut stats = Stats::default();
-    let mut table_builder = SecondaryTableBuilder::new(module, features);
     for class in fn_classes {
         try_merge_equivalence_class(
             class,
@@ -129,7 +129,10 @@ pub fn merge_funcs(module: &mut walrus::Module, features: WasmFeatures) {
     log::debug!("MERGE-STATS: {:?}", stats);
 }
 
-fn collect_equivalence_class(module: &walrus::Module) -> Vec<EquivalenceClass> {
+fn collect_equivalence_class(
+    module: &walrus::Module,
+    is_indirector_enabled: bool,
+) -> Vec<EquivalenceClass> {
     let mut hashed_group: HashMap<FunctionHash, Vec<&walrus::Function>> = HashMap::new();
     // FIXME: This grouping can be done by O(NlogN) by using sort algorithm
     for f in module.funcs.iter() {
@@ -168,7 +171,12 @@ fn collect_equivalence_class(module: &walrus::Module) -> Vec<EquivalenceClass> {
         for f in group {
             let mut found = false;
             for class in classes.iter_mut() {
-                if are_in_equivalence_class(class.primary_func(module), f, &module) {
+                if are_in_equivalence_class(
+                    class.primary_func(module),
+                    f,
+                    &module,
+                    is_indirector_enabled,
+                ) {
                     class.funcs.push(f.id());
                     found = true;
                     break;
@@ -256,7 +264,11 @@ impl SecondaryTableBuilder {
         call_graph: &mut CallGraph,
     ) -> usize {
         let elem = module.elements.get_mut(self.element_id);
-        log::debug!("DIRECT-TO-INDIRECT: {:?} (segment length {})", func_id, elem.members.len());
+        log::debug!(
+            "DIRECT-TO-INDIRECT: {:?} (segment length {})",
+            func_id,
+            elem.members.len()
+        );
         let idx = elem.members.len();
         elem.members.push(Some(func_id));
         call_graph.add_use(
@@ -1021,6 +1033,7 @@ fn are_in_equivalence_class(
     lhs: &walrus::Function,
     rhs: &walrus::Function,
     module: &walrus::Module,
+    is_indirector_enabled: bool,
 ) -> bool {
     let (lhs, rhs) = match (&lhs.kind, &rhs.kind) {
         (walrus::FunctionKind::Local(lhs), walrus::FunctionKind::Local(rhs)) => (lhs, rhs),
@@ -1078,7 +1091,11 @@ fn are_in_equivalence_class(
         match (lhs_instr, rhs_instr) {
             (Instr::Block(_), Instr::Block(_)) => {}
             (Instr::Loop(_), Instr::Loop(_)) => {}
-            (Instr::Call(_), Instr::Call(_)) => {}
+            (Instr::Call(Call { func: lhs }), Instr::Call(Call { func: rhs })) => {
+                if !is_indirector_enabled && lhs != rhs {
+                    return false;
+                }
+            }
             (Instr::CallIndirect(lhs_call), Instr::CallIndirect(rhs_call)) => {
                 if lhs_call.ty != rhs_call.ty || lhs_call.table != rhs_call.table {
                     return false;
@@ -1506,7 +1523,8 @@ mod tests {
         assert!(are_in_equivalence_class(
             module.funcs.get(f1_id),
             module.funcs.get(f2_id),
-            &module
+            &module,
+            false
         ));
     }
     #[test]
@@ -1527,7 +1545,8 @@ mod tests {
         assert!(!are_in_equivalence_class(
             module.funcs.get(f2_id),
             module.funcs.get(f3_id),
-            &module
+            &module,
+            false
         ));
     }
 
@@ -1556,7 +1575,8 @@ mod tests {
         assert!(!are_in_equivalence_class(
             module.funcs.get(f4_id),
             module.funcs.get(f5_id),
-            &module
+            &module,
+            false
         ));
     }
 
@@ -1571,7 +1591,7 @@ mod tests {
         f2_builder.func_body().i32_const(43).drop();
         let f2_id = f2_builder.finish(vec![], &mut module.funcs);
 
-        let classes = collect_equivalence_class(&module);
+        let classes = collect_equivalence_class(&module, false);
         assert_eq!(classes.len(), 1);
 
         let class = classes.get(0).unwrap();
@@ -1592,7 +1612,7 @@ mod tests {
         f2_builder.func_body().i32_const(43).drop();
         f2_builder.finish(vec![], &mut module.funcs);
 
-        let classes = collect_equivalence_class(&module);
+        let classes = collect_equivalence_class(&module, false);
         let class = classes.get(0).unwrap();
 
         let params = derive_params(class, &module, false).unwrap();
@@ -1627,7 +1647,7 @@ mod tests {
         f2_builder.func_body().call(callee2);
         f2_builder.finish(vec![], &mut module.funcs);
 
-        let classes = collect_equivalence_class(&module);
+        let classes = collect_equivalence_class(&module, false);
         let class = classes.get(0).unwrap();
 
         let params = derive_params(class, &module, true).unwrap();
@@ -1673,7 +1693,7 @@ mod tests {
             .drop();
         f2_builder.finish(vec![], &mut module.funcs);
 
-        let classes = collect_equivalence_class(&module);
+        let classes = collect_equivalence_class(&module, false);
         let class = classes.get(0).unwrap();
 
         let params = derive_params(class, &module, false).unwrap();
@@ -1705,7 +1725,7 @@ mod tests {
             .drop();
         f2_builder.finish(vec![], &mut module.funcs);
 
-        let classes = collect_equivalence_class(&module);
+        let classes = collect_equivalence_class(&module, false);
         let class = classes.get(0).unwrap();
 
         let params = derive_params(class, &module, false).unwrap();
@@ -1725,7 +1745,7 @@ mod tests {
         f2_builder.func_body().i32_const(43).drop();
         f2_builder.finish(vec![], &mut module.funcs);
 
-        let classes = collect_equivalence_class(&module);
+        let classes = collect_equivalence_class(&module, false);
         let class = classes.get(0).unwrap();
 
         let params = derive_params(class, &module, false).unwrap();
@@ -1819,7 +1839,7 @@ mod tests {
         f2_builder.func_body().i32_const(2).i32_const(3).drop();
         f2_builder.finish(vec![], &mut module.funcs);
 
-        let classes = collect_equivalence_class(&module);
+        let classes = collect_equivalence_class(&module, false);
         let class = classes.get(0).unwrap();
 
         let params = derive_params(class, &module, false).unwrap();
