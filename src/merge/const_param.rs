@@ -302,6 +302,9 @@ fn reduce_duplicates(
     let mut visited = HashMap::<Vec<_>, FunctionId>::new();
     let mut removed = vec![];
 
+    log::debug!("REDUCE-DUPLICATES class.funcs = {:?}", class.funcs);
+    log::debug!("REDUCE-DUPLICATES params = {:?}", params.0);
+
     for (idx, func) in class.funcs.iter().enumerate() {
         let params = params
             .iter()
@@ -432,6 +435,8 @@ fn try_merge_equivalence_class(
 
     let mut replace_map = HashMap::default();
 
+    log::debug!("class.funcs = {:?}", class.funcs);
+    log::debug!("params = {:?}", params);
     for (idx, from) in class.funcs.iter().enumerate() {
         let params = params.iter().map(|v| v.as_value(idx)).collect::<Vec<_>>();
         let params = if let Some(params) =
@@ -897,6 +902,7 @@ impl ConstDiff {
     }
 
     fn remove_value(&mut self, index: usize) {
+        log::debug!("remove_value {}", index);
         match self {
             ConstDiff::ConstI32(vs) => {
                 vs.remove(index);
@@ -1019,6 +1025,9 @@ fn consts_diff(
                 let actual_ty = module.types.get(module.funcs.get(id.clone()).ty());
                 if expected_ty == actual_ty {
                     values.push(id);
+                } else {
+                    log::debug!("failed to merge due to type difference of functions {:?} and {:?}", expected_ty, actual_ty);
+                    return None;
                 }
             }
             _ => return None,
