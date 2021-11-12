@@ -846,6 +846,7 @@ fn derive_params(
             .map(|iter| iter.next())
             .collect::<Option<Vec<&Instr>>>()?;
 
+        log::trace!("derive_params: compute diff between {:?} and {:?}", primary_instr, siblings);
         let diff = match consts_diff(primary_instr, siblings, module, is_indirector_enabled) {
             Some(diff) => diff,
             None => continue,
@@ -1934,6 +1935,11 @@ mod tests {
     #[test]
     fn test_merge_0() {
         check_no_crash("0.wasm")
+    }
+
+    #[test]
+    fn test_merge_2() {
+        check_no_crash("2.wasm")
     }
 
     #[test]
