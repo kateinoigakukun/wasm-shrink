@@ -1025,16 +1025,8 @@ fn consts_diff(
                     value: Value::F64(v),
                 }),
             ) => values.push(*v),
-            (ConstDiff::Callee(values, ty), Instr::Call(Call { func })) => {
-                let id = *func;
-                let expected_ty = module.types.get(*ty);
-                let actual_ty = module.types.get(module.funcs.get(id.clone()).ty());
-                if expected_ty == actual_ty {
-                    values.push(id);
-                } else {
-                    log::debug!("failed to merge due to type difference of functions {:?} and {:?}", expected_ty, actual_ty);
-                    return None;
-                }
+            (ConstDiff::Callee(values, _), Instr::Call(Call { func })) => {
+                values.push(*func);
             }
             _ => return None,
         }
@@ -1113,6 +1105,16 @@ fn are_in_equivalence_class(
             (Instr::Loop(_), Instr::Loop(_)) => {}
             (Instr::Call(Call { func: lhs }), Instr::Call(Call { func: rhs })) => {
                 if !is_indirector_enabled && lhs != rhs {
+                    return false;
+                }
+                let lhs_ty = module.types.get(module.funcs.get(*lhs).ty());
+                let rhs_ty = module.types.get(module.funcs.get(*rhs).ty());
+                if lhs_ty != rhs_ty {
+                    log::debug!(
+                        "failed to merge due to type difference of functions {:?} and {:?}",
+                        lhs_ty,
+                        rhs_ty
+                    );
                     return false;
                 }
             }
@@ -1654,7 +1656,8 @@ mod tests {
     #[test]
     fn test_derive_params_callee_diff() {
         let mut module = walrus::Module::default();
-        let callee1 = FunctionBuilder::new(&mut module.types, &[], &[]);
+        let mut callee1 = FunctionBuilder::new(&mut module.types, &[], &[]);
+        callee1.func_body().const_(Value::I32(42));
         let callee1 = callee1.finish(vec![], &mut module.funcs);
         let callee2 = FunctionBuilder::new(&mut module.types, &[], &[]);
         let callee2 = callee2.finish(vec![], &mut module.funcs);
@@ -1667,9 +1670,8 @@ mod tests {
         f2_builder.func_body().call(callee2);
         f2_builder.finish(vec![], &mut module.funcs);
 
-        let classes = collect_equivalence_class(&module, false);
+        let classes = collect_equivalence_class(&module, true);
         let class = classes.get(0).unwrap();
-
         let params = derive_params(class, &module, true).unwrap();
         assert_eq!(params.len(), 1);
         let param = params.get(0).unwrap();
