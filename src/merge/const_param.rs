@@ -232,14 +232,20 @@ impl SecondaryTableBuilder {
                             Value::F32(v) => v as usize,
                             Value::F64(v) => v as usize,
                             Value::V128(_) => {
-                                log::debug!("INDIRECTOR: disabled due to unsupported init-expr {:?}", init_expr);
+                                log::debug!(
+                                    "INDIRECTOR: disabled due to unsupported init-expr {:?}",
+                                    init_expr
+                                );
                                 return None;
-                            },
+                            }
                         },
                         InitExpr::Global(_) | InitExpr::RefNull(_) | InitExpr::RefFunc(_) => {
-                            log::debug!("INDIRECTOR: disabled due to unsupported init-expr {:?}", init_expr);
+                            log::debug!(
+                                "INDIRECTOR: disabled due to unsupported init-expr {:?}",
+                                init_expr
+                            );
                             return None;
-                        },
+                        }
                     };
                     end_offsets.push(offset + len);
                 }
