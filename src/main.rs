@@ -1,7 +1,7 @@
 use anyhow::anyhow;
 use std::path::PathBuf;
 use structopt::StructOpt;
-use wasm_shrink::merge;
+use wasm_shrink::{merge, WasmFeatures};
 
 #[derive(StructOpt, Debug)]
 struct Opt {
@@ -24,9 +24,10 @@ fn main() -> anyhow::Result<()> {
     let mut module_config = walrus::ModuleConfig::new();
     module_config.strict_validate(false);
     let mut module = module_config.parse_file(opt.file)?;
+    let features = WasmFeatures::detect_from(&module);
     match opt.merge_strategy.as_str() {
         "exact-match" => merge::exact_match::merge_funcs(&mut module),
-        "const-param" => merge::const_param::merge_funcs(&mut module),
+        "const-param" => merge::const_param::merge_funcs(&mut module, features),
         other => return Err(anyhow!("Unknown merge strategy {}", other)),
     }
 

@@ -61,9 +61,10 @@ enum WasmShrink {
 impl Pass for WasmShrink {
     fn run(&self, module: &[u8]) -> Result<Vec<u8>> {
         let mut module = walrus::Module::from_buffer(module).unwrap();
+        let features = wasm_shrink::WasmFeatures::detect_from(&module);
         match self {
             WasmShrink::ConstParam => {
-                wasm_shrink::merge::const_param::merge_funcs(&mut module);
+                wasm_shrink::merge::const_param::merge_funcs(&mut module, features);
             }
         }
         Ok(module.emit_wasm())
