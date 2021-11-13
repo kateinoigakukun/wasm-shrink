@@ -2,7 +2,6 @@
 //!
 //! ## TODO
 //! - Merge functions bottom-up in call graph
-//! - Allow direct callee difference
 
 use std::collections::HashSet;
 use std::collections::{hash_map::DefaultHasher, HashMap};
@@ -10,16 +9,18 @@ use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 
 use walrus::ir::{
-    Block, Br, BrIf, BrTable, Const, GlobalGet, GlobalSet, IfElse, Instr, InstrSeqId, InstrSeqType,
-    LocalGet, LocalSet, LocalTee, Loop, MemoryGrow, MemorySize, TableFill, TableGet, TableGrow,
-    TableSet, TableSize, Value, Visitor,
+    Block, Br, BrIf, BrTable, Call, CallIndirect, Const, GlobalGet, GlobalSet, IfElse, Instr,
+    InstrSeqId, InstrSeqType, LocalGet, LocalSet, LocalTee, Loop, MemoryGrow, MemorySize,
+    TableFill, TableGet, TableGrow, TableSet, TableSize, Value, Visitor,
 };
 use walrus::{
-    FunctionBuilder, FunctionId, InstrLocId, InstrSeqBuilder, LocalFunction, LocalId, ValType,
+    ElementId, ElementKind, FunctionBuilder, FunctionId, InitExpr, InstrLocId, InstrSeqBuilder,
+    LocalFunction, LocalId, TableId, ValType,
 };
 
-use crate::merge::call_graph::CallGraph;
+use crate::merge::call_graph::{CallGraph, FunctionUse};
 use crate::merge::{func_hash, replace};
+use crate::WasmFeatures;
 
 #[derive(PartialEq, Eq, Debug, Hash, Clone, Copy, PartialOrd, Ord)]
 struct FunctionHash(u64);
@@ -54,6 +55,7 @@ struct Stats {
 
 #[derive(Debug)]
 struct EquivalenceClass {
+    /// primary function shuold be in funcs
     primary_func: FunctionId,
     /// List of functions belonging to a same class
     funcs: Vec<FunctionId>,
@@ -91,9 +93,27 @@ fn func_display_name(f: &walrus::Function) -> &str {
     f.name.as_ref().map(String::as_str).unwrap_or("unknown")
 }
 
-pub fn merge_funcs(module: &mut walrus::Module) {
+struct Config {
+    /// force merging functions even though merge benefit is less than threshold (only for testing)
+    ignore_merge_benefit: bool,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            ignore_merge_benefit: false,
+        }
+    }
+}
+
+pub fn merge_funcs(module: &mut walrus::Module, features: WasmFeatures) {
+    _merge_funcs(module, features, Config::default());
+}
+
+fn _merge_funcs(module: &mut walrus::Module, features: WasmFeatures, config: Config) {
     let mut call_graph = CallGraph::build_from(module);
-    let fn_classes = collect_equivalence_class(module);
+    let mut table_builder = SecondaryTableBuilder::new(module, features);
+    let fn_classes = collect_equivalence_class(module, table_builder.is_some());
 
     log::debug!("Dump function equivalence classes");
     let mut mergable_funcs = 0;
@@ -106,21 +126,32 @@ pub fn merge_funcs(module: &mut walrus::Module) {
             func_display_name(class.primary_func(&module)),
             class.hash
         );
-        for fn_id in class.funcs.iter().skip(1) {
+        for fn_id in class.funcs.iter() {
             log::debug!(" - {}", func_display_name(module.funcs.get(*fn_id)));
         }
         mergable_funcs += class.funcs.len() - 1;
     }
-    log::debug!("mergable_funcs = {}", mergable_funcs);
+    log::debug!("FUNCTION-CLASSES = {}", fn_classes.len());
+    log::debug!("MERGABLE-FUNCS = {}", mergable_funcs);
 
     let mut stats = Stats::default();
     for class in fn_classes {
-        try_merge_equivalence_class(class, module, &mut call_graph, &mut stats);
+        try_merge_equivalence_class(
+            class,
+            module,
+            &mut call_graph,
+            &mut table_builder,
+            &mut stats,
+            &config,
+        );
     }
     log::debug!("MERGE-STATS: {:?}", stats);
 }
 
-fn collect_equivalence_class(module: &walrus::Module) -> Vec<EquivalenceClass> {
+fn collect_equivalence_class(
+    module: &walrus::Module,
+    is_indirector_enabled: bool,
+) -> Vec<EquivalenceClass> {
     let mut hashed_group: HashMap<FunctionHash, Vec<&walrus::Function>> = HashMap::new();
     // FIXME: This grouping can be done by O(NlogN) by using sort algorithm
     for f in module.funcs.iter() {
@@ -159,7 +190,12 @@ fn collect_equivalence_class(module: &walrus::Module) -> Vec<EquivalenceClass> {
         for f in group {
             let mut found = false;
             for class in classes.iter_mut() {
-                if are_in_equivalence_class(class.primary_func(module), f, &module) {
+                if are_in_equivalence_class(
+                    class.primary_func(module),
+                    f,
+                    &module,
+                    is_indirector_enabled,
+                ) {
                     class.funcs.push(f.id());
                     found = true;
                     break;
@@ -169,7 +205,7 @@ fn collect_equivalence_class(module: &walrus::Module) -> Vec<EquivalenceClass> {
             if !found {
                 classes.push(EquivalenceClass {
                     primary_func: f.id(),
-                    funcs: vec![],
+                    funcs: vec![f.id()],
                     hash: key,
                 })
             }
@@ -179,13 +215,120 @@ fn collect_equivalence_class(module: &walrus::Module) -> Vec<EquivalenceClass> {
     fn_classes
 }
 
+struct SecondaryTableBuilder {
+    table_id: TableId,
+    element_id: ElementId,
+    elements_offset: usize,
+}
+
+impl SecondaryTableBuilder {
+    fn new(module: &mut walrus::Module, features: WasmFeatures) -> Option<Self> {
+        if std::env::var("WASM_SHRINK_DISABLE_INDIRECTOR").is_ok() {
+            log::debug!("INDIRECTOR: disabled due to environment variable");
+            return None;
+        }
+        let (table_id, elements_offset) = if features.reference_types {
+            (module.tables.add_local(0, None, ValType::Funcref), 0)
+        } else {
+            let maybe_existing = module.tables.iter().next().map(|t| t.id());
+            if let Some(existing) = maybe_existing {
+                let segs = module.elements.iter().filter_map(|seg| match seg.kind {
+                    ElementKind::Declared | ElementKind::Passive => return None,
+                    ElementKind::Active { table, offset } => {
+                        if table == existing {
+                            Some((table, offset, seg.members.len()))
+                        } else {
+                            None
+                        }
+                    }
+                });
+                let mut end_offsets = vec![];
+                for (_, init_expr, len) in segs {
+                    let offset = match init_expr {
+                        InitExpr::Value(v) => match v {
+                            Value::I32(v) => v as usize,
+                            Value::I64(v) => v as usize,
+                            Value::F32(v) => v as usize,
+                            Value::F64(v) => v as usize,
+                            Value::V128(_) => {
+                                log::debug!(
+                                    "INDIRECTOR: disabled due to unsupported init-expr {:?}",
+                                    init_expr
+                                );
+                                return None;
+                            }
+                        },
+                        InitExpr::Global(_) | InitExpr::RefNull(_) | InitExpr::RefFunc(_) => {
+                            log::debug!(
+                                "INDIRECTOR: disabled due to unsupported init-expr {:?}",
+                                init_expr
+                            );
+                            return None;
+                        }
+                    };
+                    end_offsets.push(offset + len);
+                }
+                (existing, end_offsets.into_iter().max().unwrap_or(0))
+            } else {
+                (module.tables.add_local(0, None, ValType::Funcref), 0)
+            }
+        };
+        let element_id = module.elements.add(
+            ElementKind::Active {
+                table: table_id,
+                offset: InitExpr::Value(Value::I32(elements_offset as i32)),
+            },
+            ValType::Funcref,
+            vec![],
+        );
+        Some(Self {
+            table_id,
+            element_id,
+            elements_offset,
+        })
+    }
+    fn add(
+        &mut self,
+        func_id: FunctionId,
+        module: &mut walrus::Module,
+        call_graph: &mut CallGraph,
+    ) -> usize {
+        let elem = module.elements.get_mut(self.element_id);
+        log::debug!(
+            "DIRECT-TO-INDIRECT: {:?} (segment length {})",
+            func_id,
+            elem.members.len()
+        );
+        let idx = elem.members.len();
+        elem.members.push(Some(func_id));
+        call_graph.add_use(
+            func_id,
+            FunctionUse::InElement {
+                element: self.element_id,
+                index: idx,
+            },
+        );
+
+        let table = module.tables.get_mut(self.table_id);
+        table.initial += 1;
+
+        if let Some(maximum) = &mut table.maximum {
+            *maximum += 1;
+        }
+        self.elements_offset + idx
+    }
+}
+
 fn reduce_duplicates(
     class: &mut EquivalenceClass,
     params: &mut ParamInfos,
 ) -> HashMap<FunctionId, FunctionId> {
     let mut replace_map = HashMap::<FunctionId, FunctionId>::new();
-    let mut visited = HashMap::<Vec<Value>, FunctionId>::new();
+    let mut visited = HashMap::<Vec<_>, FunctionId>::new();
     let mut removed = vec![];
+
+    log::debug!("REDUCE-DUPLICATES class.funcs = {:?}", class.funcs);
+    log::debug!("REDUCE-DUPLICATES params = {:?}", params.0);
 
     for (idx, func) in class.funcs.iter().enumerate() {
         let params = params
@@ -208,6 +351,20 @@ fn reduce_duplicates(
             param.values.remove_value(idx);
         }
     }
+    for (from, to) in replace_map.iter() {
+        for param in params.0.iter_mut() {
+            match &mut param.values {
+                ConstDiff::Callee(func_ids, _) => {
+                    for id in func_ids {
+                        if id == from {
+                            *id = *to;
+                        }
+                    }
+                }
+                _ => continue,
+            }
+        }
+    }
     replace_map
 }
 
@@ -215,9 +372,11 @@ fn try_merge_equivalence_class(
     mut class: EquivalenceClass,
     module: &mut walrus::Module,
     call_graph: &mut CallGraph,
+    table_builder: &mut Option<SecondaryTableBuilder>,
     stats: &mut Stats,
+    config: &Config,
 ) {
-    let mut params = match derive_params(&class, module) {
+    let mut params = match derive_params(&class, module, table_builder.is_some()) {
         Some(params) => params,
         None => {
             stats.no_derived_param_count += class.funcs.len();
@@ -232,8 +391,10 @@ fn try_merge_equivalence_class(
             replace_map.insert(*from, class.primary_func);
             log::debug!(
                 "MERGE-ALL-TO-ONE: '{}' ({:?}) to '{}' ({:?})",
-                func_display_name(module.funcs.get(*from)), *from,
-                func_display_name(class.primary_func(module)), class.primary_func
+                func_display_name(module.funcs.get(*from)),
+                *from,
+                func_display_name(class.primary_func(module)),
+                class.primary_func
             );
         }
         stats.merged_count += replace_map.len();
@@ -247,8 +408,10 @@ fn try_merge_equivalence_class(
     for (from, to) in replace_map.iter() {
         log::debug!(
             "REPLACE-BY-DUP: '{}' ({:?}) to '{}' ({:?})",
-            func_display_name(module.funcs.get(*from)), *from,
-            func_display_name(module.funcs.get(*to)), *to
+            func_display_name(module.funcs.get(*from)),
+            *from,
+            func_display_name(module.funcs.get(*to)),
+            *to
         );
     }
     stats.merged_count += replace_map.len();
@@ -264,7 +427,7 @@ fn try_merge_equivalence_class(
         removed_instrs,
         added_instrs
     );
-    if !has_benefit {
+    if !has_benefit && !config.ignore_merge_benefit {
         log::debug!(
             "SKIP-MERGING: '{}' based on merge-benefit",
             func_display_name(primary_func)
@@ -282,6 +445,7 @@ fn try_merge_equivalence_class(
         class.remangle_merged_func(&module),
         class.primary_func,
         &params,
+        table_builder,
         module,
     );
     call_graph.add_function(
@@ -297,9 +461,18 @@ fn try_merge_equivalence_class(
 
     let mut replace_map = HashMap::default();
 
+    log::debug!("class.funcs = {:?}", class.funcs);
+    log::debug!("params = {:?}", params);
     for (idx, from) in class.funcs.iter().enumerate() {
-        let name = module.funcs.get(*from).name.as_ref().map(String::as_str);
         let params = params.iter().map(|v| v.as_value(idx)).collect::<Vec<_>>();
+        let params = if let Some(params) =
+            lower_const_value_to_wasm_value(params, table_builder, module, call_graph)
+        {
+            params
+        } else {
+            continue;
+        };
+        let name = module.funcs.get(*from).name.as_ref().map(String::as_str);
 
         let thunk_id = create_thunk_func(
             class.thunk_func_name(name.clone()),
@@ -312,7 +485,8 @@ fn try_merge_equivalence_class(
         replace_map.insert(*from, thunk_id);
         log::debug!(
             "REPLACE-BY-THUNK: '{}' ({:?}) to thunk ({:?})",
-            func_display_name(module.funcs.get(*from)), *from,
+            func_display_name(module.funcs.get(*from)),
+            *from,
             thunk_id.clone()
         );
         call_graph.add_function(thunk_id, module.funcs.get(thunk_id).kind.unwrap_local());
@@ -320,6 +494,29 @@ fn try_merge_equivalence_class(
     stats.merged_count += replace_map.len();
     stats.thunk_count += replace_map.len();
     replace::replace_funcs(&replace_map, module, call_graph);
+}
+
+fn lower_const_value_to_wasm_value(
+    params: Vec<ConstValue>,
+    table_builder: &mut Option<SecondaryTableBuilder>,
+    module: &mut walrus::Module,
+    call_graph: &mut CallGraph,
+) -> Option<Vec<walrus::ir::Value>> {
+    params
+        .into_iter()
+        .map(|param| match param {
+            ConstValue::Value(v) => Some(v),
+            ConstValue::Function(f) => {
+                if let Some(indirector) = table_builder {
+                    let offset = indirector.add(f, module, call_graph);
+                    Some(Value::I32(offset as i32))
+                } else {
+                    log::warn!("indirector is disabled but got call diff");
+                    None
+                }
+            }
+        })
+        .collect::<Option<Vec<_>>>()
 }
 
 struct ParamInfos(Vec<ParamInfo>);
@@ -332,11 +529,11 @@ impl Deref for ParamInfos {
 }
 
 impl ParamInfos {
-    fn find(&self, seq_id: InstrSeqId, position: usize) -> Option<(usize, &ParamInfo)> {
+    fn find(&self, seq_id: InstrSeqId, position: usize) -> Option<(usize, &ConstDiff)> {
         for (pos, param) in self.0.iter().enumerate() {
             for param_use in &param.uses {
                 if param_use.seq_id == seq_id && param_use.position == position {
-                    return Some((pos, param));
+                    return Some((pos, &param.values));
                 }
             }
         }
@@ -392,6 +589,7 @@ struct Cloner<'a> {
     /// `original` to `new` iseq id map
     iseq_map: HashMap<InstrSeqId, InstrSeqId>,
 
+    indirector_table_id: Option<TableId>,
     params: &'a ParamInfos,
     /// The order should be matched with `params`
     extra_args: Vec<LocalId>,
@@ -401,6 +599,7 @@ impl<'a> Cloner<'a> {
     fn clone(
         name: Option<String>,
         original: FunctionId,
+        table_builder: &Option<SecondaryTableBuilder>,
         params: &'a ParamInfos,
         module: &mut walrus::Module,
     ) -> FunctionId {
@@ -452,6 +651,7 @@ impl<'a> Cloner<'a> {
             builder,
             iseq_stack: vec![],
             iseq_map,
+            indirector_table_id: table_builder.as_ref().map(|b| b.table_id),
             params,
             extra_args,
         };
@@ -519,6 +719,19 @@ impl<'instr> Visitor<'instr> for Cloner<'_> {
                 let arg = self.extra_args[param_idx];
                 Instr::LocalGet(LocalGet { local: arg })
             }
+            (Instr::Call(_), Some((param_idx, ConstDiff::Callee(_, ty)))) => {
+                if let Some(table_id) = self.indirector_table_id {
+                    let arg = self.extra_args[param_idx];
+                    self.current_seq()
+                        .instr(Instr::LocalGet(LocalGet { local: arg }));
+                    Instr::CallIndirect(CallIndirect {
+                        ty: *ty,
+                        table: table_id,
+                    })
+                } else {
+                    instr.clone()
+                }
+            }
             (_, Some(param)) => unimplemented!("unhandled param {:?}", param),
             (instr, None) => match instr {
                 Instr::Block(Block { seq }) => {
@@ -571,9 +784,10 @@ fn create_merged_func(
     name: Option<String>,
     primary_func: FunctionId,
     params: &ParamInfos,
+    table_builder: &Option<SecondaryTableBuilder>,
     module: &mut walrus::Module,
 ) -> walrus::FunctionId {
-    Cloner::clone(name, primary_func, params, module)
+    Cloner::clone(name, primary_func, table_builder, params, module)
 }
 
 fn create_thunk_func(
@@ -608,6 +822,12 @@ fn create_thunk_func(
     builder.finish(forwarding_args, &mut module.funcs)
 }
 
+/// ### Concept
+///
+/// |                                   | EquivClass.primary_func | EquivClass.funcs[0]     | EquivClass.funcs[0]     |
+/// | ParamInfos[0].uses[0] (i32.const) | ParamInfos[0].values[0] | ParamInfos[0].values[1] | ParamInfos[0].values[2] |
+/// | ParamInfos[0].uses[1] (i32.const) | ParamInfos[0].values[0] | ParamInfos[0].values[1] | ParamInfos[0].values[2] |
+/// | ParamInfos[1].uses[0] (i64.const) | ParamInfos[1].values[0] | ParamInfos[1].values[1] | ParamInfos[1].values[2] |
 #[derive(Debug)]
 struct ParamInfo {
     /// const values ordered by the EquivalenceClass's `[primary_func] + funcs`
@@ -615,7 +835,11 @@ struct ParamInfo {
     uses: Vec<InstrLocInfo>,
 }
 
-fn derive_params(class: &EquivalenceClass, module: &walrus::Module) -> Option<ParamInfos> {
+fn derive_params(
+    class: &EquivalenceClass,
+    module: &walrus::Module,
+    is_indirector_enabled: bool,
+) -> Option<ParamInfos> {
     let primary_func = match &class.primary_func(module).kind {
         walrus::FunctionKind::Local(primary_func) => primary_func,
         _ => return None,
@@ -642,7 +866,12 @@ fn derive_params(class: &EquivalenceClass, module: &walrus::Module) -> Option<Pa
             .map(|iter| iter.next())
             .collect::<Option<Vec<&Instr>>>()?;
 
-        let diff = match consts_diff(primary_instr, siblings) {
+        log::trace!(
+            "derive_params: compute diff between {:?} and {:?}",
+            primary_instr,
+            siblings
+        );
+        let diff = match consts_diff(primary_instr, siblings, module, is_indirector_enabled) {
             Some(diff) => diff,
             None => continue,
         };
@@ -667,12 +896,19 @@ fn derive_params(class: &EquivalenceClass, module: &walrus::Module) -> Option<Pa
     Some(ParamInfos(params))
 }
 
+#[derive(Debug, PartialEq, Eq, Hash)]
+enum ConstValue {
+    Value(Value),
+    Function(FunctionId),
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum ConstDiff {
     ConstI32(Vec<i32>),
     ConstI64(Vec<i64>),
     ConstF32(Vec<u32>),
     ConstF64(Vec<u64>),
+    Callee(Vec<FunctionId>, walrus::TypeId),
 }
 
 impl ConstDiff {
@@ -682,6 +918,7 @@ impl ConstDiff {
             ConstDiff::ConstI64(_) => ValType::I64,
             ConstDiff::ConstF32(_) => ValType::F32,
             ConstDiff::ConstF64(_) => ValType::F64,
+            ConstDiff::Callee(_, _) => ValType::I32,
         }
     }
 
@@ -691,10 +928,12 @@ impl ConstDiff {
             ConstDiff::ConstI64(vs) => vs.len(),
             ConstDiff::ConstF32(vs) => vs.len(),
             ConstDiff::ConstF64(vs) => vs.len(),
+            ConstDiff::Callee(vs, _) => vs.len(),
         }
     }
 
     fn remove_value(&mut self, index: usize) {
+        log::debug!("remove_value {}", index);
         match self {
             ConstDiff::ConstI32(vs) => {
                 vs.remove(index);
@@ -706,6 +945,9 @@ impl ConstDiff {
                 vs.remove(index);
             }
             ConstDiff::ConstF64(vs) => {
+                vs.remove(index);
+            }
+            ConstDiff::Callee(vs, _) => {
                 vs.remove(index);
             }
         }
@@ -726,43 +968,60 @@ impl ConstDiff {
             ConstDiff::ConstI64(vs) => is_all_same(vs),
             ConstDiff::ConstF32(vs) => is_all_same(vs),
             ConstDiff::ConstF64(vs) => is_all_same(vs),
+            ConstDiff::Callee(vs, _) => is_all_same(vs),
         }
     }
 
-    fn as_value(&self, idx: usize) -> walrus::ir::Value {
+    fn as_value(&self, idx: usize) -> ConstValue {
         match self {
             ConstDiff::ConstI32(vs) => {
                 let v = vs[idx];
-                Value::I32(v)
+                ConstValue::Value(Value::I32(v))
             }
             ConstDiff::ConstI64(vs) => {
                 let v = vs[idx];
-                Value::I64(v)
+                ConstValue::Value(Value::I64(v))
             }
             ConstDiff::ConstF32(vs) => {
                 let v = vs[idx];
-                Value::F32(v)
+                ConstValue::Value(Value::F32(v))
             }
             ConstDiff::ConstF64(vs) => {
                 let v = vs[idx];
-                Value::F64(v)
+                ConstValue::Value(Value::F64(v))
+            }
+            ConstDiff::Callee(vs, _) => {
+                let v = vs[idx];
+                ConstValue::Function(v)
             }
         }
     }
 }
 
-fn consts_diff(primary: &Instr, siblings: Vec<&Instr>) -> Option<ConstDiff> {
-    let primary_value = match primary {
-        Instr::Const(Const { value }) => value,
+fn consts_diff(
+    primary: &Instr,
+    siblings: Vec<&Instr>,
+    module: &walrus::Module,
+    is_indirector_enabled: bool,
+) -> Option<ConstDiff> {
+    let mut diff = match primary {
+        Instr::Const(Const { value }) => match value {
+            Value::I32(v) => ConstDiff::ConstI32(vec![*v]),
+            Value::I64(v) => ConstDiff::ConstI64(vec![*v]),
+            Value::F32(v) => ConstDiff::ConstF32(vec![*v]),
+            Value::F64(v) => ConstDiff::ConstF64(vec![*v]),
+            Value::V128(_) => unimplemented!(),
+        },
+        Instr::Call(Call { func }) => {
+            if is_indirector_enabled {
+                let id = *func;
+                let ty = module.funcs.get(id.clone()).ty();
+                ConstDiff::Callee(vec![id], ty)
+            } else {
+                return None;
+            }
+        }
         _ => return None,
-    };
-
-    let mut diff = match primary_value {
-        Value::I32(v) => ConstDiff::ConstI32(vec![*v]),
-        Value::I64(v) => ConstDiff::ConstI64(vec![*v]),
-        Value::F32(v) => ConstDiff::ConstF32(vec![*v]),
-        Value::F64(v) => ConstDiff::ConstF64(vec![*v]),
-        Value::V128(_) => unimplemented!(),
     };
 
     for sibling in siblings {
@@ -791,6 +1050,9 @@ fn consts_diff(primary: &Instr, siblings: Vec<&Instr>) -> Option<ConstDiff> {
                     value: Value::F64(v),
                 }),
             ) => values.push(*v),
+            (ConstDiff::Callee(values, _), Instr::Call(Call { func })) => {
+                values.push(*func);
+            }
             _ => return None,
         }
     }
@@ -808,6 +1070,7 @@ fn are_in_equivalence_class(
     lhs: &walrus::Function,
     rhs: &walrus::Function,
     module: &walrus::Module,
+    is_indirector_enabled: bool,
 ) -> bool {
     let (lhs, rhs) = match (&lhs.kind, &rhs.kind) {
         (walrus::FunctionKind::Local(lhs), walrus::FunctionKind::Local(rhs)) => (lhs, rhs),
@@ -865,9 +1128,18 @@ fn are_in_equivalence_class(
         match (lhs_instr, rhs_instr) {
             (Instr::Block(_), Instr::Block(_)) => {}
             (Instr::Loop(_), Instr::Loop(_)) => {}
-            (Instr::Call(lhs_call), Instr::Call(rhs_call)) => {
-                // TODO: merge different callee
-                if lhs_call.func != rhs_call.func {
+            (Instr::Call(Call { func: lhs }), Instr::Call(Call { func: rhs })) => {
+                if !is_indirector_enabled && lhs != rhs {
+                    return false;
+                }
+                let lhs_ty = module.types.get(module.funcs.get(*lhs).ty());
+                let rhs_ty = module.types.get(module.funcs.get(*rhs).ty());
+                if lhs_ty != rhs_ty {
+                    log::debug!(
+                        "failed to merge due to type difference of functions {:?} and {:?}",
+                        lhs_ty,
+                        rhs_ty
+                    );
                     return false;
                 }
             }
@@ -1248,7 +1520,7 @@ mod tests {
         path::{Path, PathBuf},
     };
 
-    use walrus::{FunctionBuilder, ValType};
+    use walrus::{ir::LoadKind, ir::MemArg, FunctionBuilder, ValType};
 
     use crate::merge::const_param::{self, *};
 
@@ -1298,7 +1570,8 @@ mod tests {
         assert!(are_in_equivalence_class(
             module.funcs.get(f1_id),
             module.funcs.get(f2_id),
-            &module
+            &module,
+            false
         ));
     }
     #[test]
@@ -1319,7 +1592,8 @@ mod tests {
         assert!(!are_in_equivalence_class(
             module.funcs.get(f2_id),
             module.funcs.get(f3_id),
-            &module
+            &module,
+            false
         ));
     }
 
@@ -1348,7 +1622,8 @@ mod tests {
         assert!(!are_in_equivalence_class(
             module.funcs.get(f4_id),
             module.funcs.get(f5_id),
-            &module
+            &module,
+            false
         ));
     }
 
@@ -1363,7 +1638,7 @@ mod tests {
         f2_builder.func_body().i32_const(43).drop();
         let f2_id = f2_builder.finish(vec![], &mut module.funcs);
 
-        let classes = collect_equivalence_class(&module);
+        let classes = collect_equivalence_class(&module, false);
         assert_eq!(classes.len(), 1);
 
         let class = classes.get(0).unwrap();
@@ -1371,6 +1646,45 @@ mod tests {
         func_ids.insert(&class.primary_func);
 
         assert_eq!(func_ids, vec![f1_id, f2_id].iter().collect());
+    }
+
+    #[test]
+    fn test_collect_equivalence_class_1() {
+        let mut module = walrus::Module::default();
+        let mem = module.memories.add_local(false, 0, None);
+        let mut f1_builder = FunctionBuilder::new(&mut module.types, &[], &[]);
+        f1_builder
+            .func_body()
+            .i32_const(0)
+            .load(
+                mem,
+                LoadKind::I32 { atomic: false },
+                MemArg {
+                    align: 1,
+                    offset: 0,
+                },
+            )
+            .drop();
+        f1_builder.finish(vec![], &mut module.funcs);
+        let mut f2_builder = FunctionBuilder::new(&mut module.types, &[], &[]);
+        f2_builder
+            .func_body()
+            .i32_const(0)
+            .load(
+                mem,
+                LoadKind::I32 { atomic: false },
+                MemArg {
+                    align: 1,
+                    offset: 1,
+                },
+            )
+            .drop();
+        f2_builder.finish(vec![], &mut module.funcs);
+
+        let classes = collect_equivalence_class(&module, false);
+        assert_eq!(classes.len(), 2);
+        assert_eq!(classes[0].funcs.len(), 1);
+        assert_eq!(classes[1].funcs.len(), 1);
     }
 
     #[test]
@@ -1384,10 +1698,10 @@ mod tests {
         f2_builder.func_body().i32_const(43).drop();
         f2_builder.finish(vec![], &mut module.funcs);
 
-        let classes = collect_equivalence_class(&module);
+        let classes = collect_equivalence_class(&module, false);
         let class = classes.get(0).unwrap();
 
-        let params = derive_params(class, &module).unwrap();
+        let params = derive_params(class, &module, false).unwrap();
         assert_eq!(params.len(), 1);
         let param = params.get(0).unwrap();
         assert_eq!(param.uses.len(), 1);
@@ -1401,6 +1715,33 @@ mod tests {
                 .unwrap_local()
                 .entry_block()
         );
+    }
+
+    #[test]
+    fn test_derive_params_callee_diff() {
+        let mut module = walrus::Module::default();
+        let mut callee1 = FunctionBuilder::new(&mut module.types, &[], &[]);
+        callee1.func_body().const_(Value::I32(42));
+        let callee1 = callee1.finish(vec![], &mut module.funcs);
+        let callee2 = FunctionBuilder::new(&mut module.types, &[], &[]);
+        let callee2 = callee2.finish(vec![], &mut module.funcs);
+
+        let mut f1_builder = FunctionBuilder::new(&mut module.types, &[], &[]);
+        f1_builder.func_body().call(callee1);
+        f1_builder.finish(vec![], &mut module.funcs);
+
+        let mut f2_builder = FunctionBuilder::new(&mut module.types, &[], &[]);
+        f2_builder.func_body().call(callee2);
+        f2_builder.finish(vec![], &mut module.funcs);
+
+        let classes = collect_equivalence_class(&module, true);
+        let class = classes.get(0).unwrap();
+        let params = derive_params(class, &module, true).unwrap();
+        assert_eq!(params.len(), 1);
+        let param = params.get(0).unwrap();
+        assert_eq!(param.uses.len(), 1);
+        let param_use = param.uses.get(0).unwrap();
+        assert_eq!(param_use.position, 0);
     }
 
     #[test]
@@ -1438,10 +1779,10 @@ mod tests {
             .drop();
         f2_builder.finish(vec![], &mut module.funcs);
 
-        let classes = collect_equivalence_class(&module);
+        let classes = collect_equivalence_class(&module, false);
         let class = classes.get(0).unwrap();
 
-        let params = derive_params(class, &module).unwrap();
+        let params = derive_params(class, &module, false).unwrap();
         assert_eq!(params.len(), 1);
         let param = params.get(0).unwrap();
         assert_eq!(param.uses.len(), 2);
@@ -1470,10 +1811,10 @@ mod tests {
             .drop();
         f2_builder.finish(vec![], &mut module.funcs);
 
-        let classes = collect_equivalence_class(&module);
+        let classes = collect_equivalence_class(&module, false);
         let class = classes.get(0).unwrap();
 
-        let params = derive_params(class, &module).unwrap();
+        let params = derive_params(class, &module, false).unwrap();
         assert_eq!(params.len(), 1);
         let param = params.get(0).unwrap();
         assert_eq!(param.uses.len(), 1);
@@ -1490,11 +1831,18 @@ mod tests {
         f2_builder.func_body().i32_const(43).drop();
         f2_builder.finish(vec![], &mut module.funcs);
 
-        let classes = collect_equivalence_class(&module);
+        let classes = collect_equivalence_class(&module, false);
         let class = classes.get(0).unwrap();
 
-        let params = derive_params(class, &module).unwrap();
-        let merged = create_merged_func(None, class.primary_func, &params, &mut module);
+        let params = derive_params(class, &module, false).unwrap();
+        let features = WasmFeatures::detect_from(&module);
+        let merged = create_merged_func(
+            None,
+            class.primary_func,
+            &params,
+            &SecondaryTableBuilder::new(&mut module, features),
+            &mut module,
+        );
 
         let merged = module.funcs.get(merged);
         let merged_params = module.types.params(merged.ty());
@@ -1558,7 +1906,8 @@ mod tests {
         let mut f2_builder = FunctionBuilder::new(&mut module.types, &[], &[]);
         f2_builder.func_body().i32_const(42).drop();
         f2_builder.finish(vec![], &mut module.funcs);
-        merge_funcs(&mut module);
+        let features = WasmFeatures::detect_from(&module);
+        merge_funcs(&mut module, features);
 
         assert_eq!(module.funcs.iter().count(), 1);
     }
@@ -1576,10 +1925,10 @@ mod tests {
         f2_builder.func_body().i32_const(2).i32_const(3).drop();
         f2_builder.finish(vec![], &mut module.funcs);
 
-        let classes = collect_equivalence_class(&module);
+        let classes = collect_equivalence_class(&module, false);
         let class = classes.get(0).unwrap();
 
-        let params = derive_params(class, &module).unwrap();
+        let params = derive_params(class, &module, false).unwrap();
 
         let f1 = module.funcs.get(f1).kind.unwrap_local();
         let (has_benefit, _, _) = params.has_merge_benefit(f1);
@@ -1617,7 +1966,10 @@ mod tests {
         let source = fixture.join(file);
         let result = fixture.join(format!("{}.opt", file));
         let mut module = walrus::Module::from_file(source).unwrap();
-        const_param::merge_funcs(&mut module);
+        let features = WasmFeatures {
+            reference_types: false,
+        };
+        const_param::merge_funcs(&mut module, features);
         module.emit_wasm_file(result.clone()).unwrap();
 
         if let Some(wasm2wat) = find_tool("wasm2wat") {
@@ -1649,6 +2001,16 @@ mod tests {
     }
 
     #[test]
+    fn test_merge_2() {
+        check_no_crash("2.wasm")
+    }
+
+    #[test]
+    fn test_merge_3() {
+        check_no_crash("3.wasm")
+    }
+
+    #[test]
     fn test_traverse_emtpy_block() {
         let fixture = PathBuf::from(file!())
             .parent()
@@ -1663,5 +2025,39 @@ mod tests {
         let f = module.functions().next().unwrap().kind.unwrap_local();
         let instrs = dfs_pre_order_iter(f, f.entry_block()).collect::<Vec<_>>();
         assert_eq!(instrs.len(), 7, "{:?}", instrs)
+    }
+
+    #[test]
+    fn test_indirection() {
+        let mut module = walrus::Module::default();
+        let mut callee1 = FunctionBuilder::new(&mut module.types, &[], &[]);
+        callee1.func_body().i32_const(42); // add const to avoid merging callees
+        let callee1 = callee1.finish(vec![], &mut module.funcs);
+        let callee2 = FunctionBuilder::new(&mut module.types, &[], &[]);
+        let callee2 = callee2.finish(vec![], &mut module.funcs);
+
+        let mut f1_builder = FunctionBuilder::new(&mut module.types, &[], &[]);
+        f1_builder.func_body().call(callee1);
+        f1_builder.finish(vec![], &mut module.funcs);
+
+        let mut f2_builder = FunctionBuilder::new(&mut module.types, &[], &[]);
+        f2_builder.func_body().call(callee2);
+        f2_builder.finish(vec![], &mut module.funcs);
+        let features = WasmFeatures {
+            reference_types: false,
+        };
+        const_param::_merge_funcs(&mut module, features, Config { ignore_merge_benefit: true });
+        assert_eq!(module.tables.iter().count(), 1);
+
+        assert_eq!(module.functions().count(), 5);
+
+        assert_eq!(module.elements.iter().count(), 1);
+        let elem = module.elements.iter().next().expect("exactly one elem seg");
+        let mut members = elem.members.iter().flatten().collect::<Vec<_>>();
+        assert_eq!(members.len(), 2);
+        members.sort();
+        let mut expected_members = vec![&callee1, &callee2];
+        expected_members.sort();
+        assert_eq!(members, expected_members);
     }
 }
