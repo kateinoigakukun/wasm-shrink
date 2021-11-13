@@ -18,6 +18,9 @@ struct Opt {
 
     #[structopt(long)]
     enable_reference_types: bool,
+
+    #[structopt(long)]
+    stats: Option<PathBuf>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -35,10 +38,32 @@ fn main() -> anyhow::Result<()> {
 
     match opt.merge_strategy.as_str() {
         "exact-match" => merge::exact_match::merge_funcs(&mut module),
-        "const-param" => merge::const_param::merge_funcs(&mut module, features),
+        "const-param" => {
+            let stats = merge::const_param::merge_funcs(&mut module, features);
+            if let Some(stats_path) = opt.stats {
+                write_stats(stats_path, &stats)
+            }
+        }
         other => return Err(anyhow!("Unknown merge strategy {}", other)),
     }
 
     module.emit_wasm_file(opt.output)?;
     Ok(())
+}
+
+fn write_stats<S: serde::Serialize>(stats_path: PathBuf, stats: &S) {
+    let stats_file = match std::fs::File::create(stats_path) {
+        Ok(stats_file) => stats_file,
+        Err(e) => {
+            log::warn!("failed to create stats file: {}", e);
+            return;
+        }
+    };
+    match serde_json::to_writer_pretty(stats_file, stats) {
+        Ok(()) => (),
+        Err(e) => {
+            log::warn!("failed to write to stats file: {}", e);
+            return;
+        }
+    };
 }

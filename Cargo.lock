@@ -1123,6 +1123,8 @@ dependencies = [
  "anyhow",
  "env_logger 0.8.4",
  "log",
+ "serde",
+ "serde_json",
  "structopt",
  "walrus",
  "wasmtime",

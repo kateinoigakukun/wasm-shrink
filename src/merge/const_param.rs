@@ -8,6 +8,7 @@ use std::collections::{hash_map::DefaultHasher, HashMap};
 use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 
+use serde::Serialize;
 use walrus::ir::{
     Block, Br, BrIf, BrTable, Call, CallIndirect, Const, GlobalGet, GlobalSet, IfElse, Instr,
     InstrSeqId, InstrSeqType, LocalGet, LocalSet, LocalTee, Loop, MemoryGrow, MemorySize,
@@ -43,14 +44,13 @@ impl FunctionHash {
     }
 }
 
-#[derive(Debug, Default)]
-struct Stats {
-    merged_count: usize,
-    all_to_one_count: usize,
-    reduce_dup_count: usize,
-    thunk_count: usize,
-    skip_by_benefit_count: usize,
-    no_derived_param_count: usize,
+#[derive(Debug, Default, Serialize)]
+pub struct Stats {
+    all_functions: usize,
+    merged_functions: usize,
+    exactly_same_functions: usize,
+    thunk_functions: usize,
+    skip_by_benefit: usize,
 }
 
 #[derive(Debug)]
@@ -93,12 +93,12 @@ fn func_display_name(f: &walrus::Function) -> &str {
     f.name.as_ref().map(String::as_str).unwrap_or("unknown")
 }
 
-struct Config {
+struct Options {
     /// force merging functions even though merge benefit is less than threshold (only for testing)
     ignore_merge_benefit: bool,
 }
 
-impl Default for Config {
+impl Default for Options {
     fn default() -> Self {
         Self {
             ignore_merge_benefit: false,
@@ -106,11 +106,11 @@ impl Default for Config {
     }
 }
 
-pub fn merge_funcs(module: &mut walrus::Module, features: WasmFeatures) {
-    _merge_funcs(module, features, Config::default());
+pub fn merge_funcs(module: &mut walrus::Module, features: WasmFeatures) -> Stats {
+    _merge_funcs(module, features, Options::default())
 }
 
-fn _merge_funcs(module: &mut walrus::Module, features: WasmFeatures, config: Config) {
+fn _merge_funcs(module: &mut walrus::Module, features: WasmFeatures, config: Options) -> Stats {
     let mut call_graph = CallGraph::build_from(module);
     let mut table_builder = SecondaryTableBuilder::new(module, features);
     let fn_classes = collect_equivalence_class(module, table_builder.is_some());
@@ -135,6 +135,7 @@ fn _merge_funcs(module: &mut walrus::Module, features: WasmFeatures, config: Con
     log::debug!("MERGABLE-FUNCS = {}", mergable_funcs);
 
     let mut stats = Stats::default();
+    stats.all_functions = module.functions().count();
     for class in fn_classes {
         try_merge_equivalence_class(
             class,
@@ -146,6 +147,7 @@ fn _merge_funcs(module: &mut walrus::Module, features: WasmFeatures, config: Con
         );
     }
     log::debug!("MERGE-STATS: {:?}", stats);
+    stats
 }
 
 fn collect_equivalence_class(
@@ -374,12 +376,11 @@ fn try_merge_equivalence_class(
     call_graph: &mut CallGraph,
     table_builder: &mut Option<SecondaryTableBuilder>,
     stats: &mut Stats,
-    config: &Config,
+    config: &Options,
 ) {
     let mut params = match derive_params(&class, module, table_builder.is_some()) {
         Some(params) => params,
         None => {
-            stats.no_derived_param_count += class.funcs.len();
             log::warn!("derive_params returns None unexpectedly for {:?}", class);
             return;
         }
@@ -397,8 +398,8 @@ fn try_merge_equivalence_class(
                 class.primary_func
             );
         }
-        stats.merged_count += replace_map.len();
-        stats.all_to_one_count += replace_map.len();
+        stats.merged_functions += replace_map.len();
+        stats.exactly_same_functions += replace_map.len();
         replace::replace_funcs(&replace_map, module, call_graph);
         return;
     };
@@ -414,8 +415,8 @@ fn try_merge_equivalence_class(
             *to
         );
     }
-    stats.merged_count += replace_map.len();
-    stats.reduce_dup_count += replace_map.len();
+    stats.merged_functions += replace_map.len();
+    stats.exactly_same_functions += replace_map.len();
     replace::replace_funcs(&replace_map, module, call_graph);
 
     let primary_func = class.primary_func(module);
@@ -432,7 +433,7 @@ fn try_merge_equivalence_class(
             "SKIP-MERGING: '{}' based on merge-benefit",
             func_display_name(primary_func)
         );
-        stats.skip_by_benefit_count += class.funcs.len();
+        stats.skip_by_benefit += class.funcs.len();
         return;
     }
 
@@ -494,8 +495,8 @@ fn try_merge_equivalence_class(
         );
         call_graph.add_function(thunk_id, module.funcs.get(thunk_id).kind.unwrap_local());
     }
-    stats.merged_count += replace_map.len();
-    stats.thunk_count += replace_map.len();
+    stats.merged_functions += replace_map.len();
+    stats.thunk_functions += replace_map.len();
     replace::replace_funcs(&replace_map, module, call_graph);
 }
 
@@ -2052,7 +2053,7 @@ mod tests {
         const_param::_merge_funcs(
             &mut module,
             features,
-            Config {
+            Options {
                 ignore_merge_benefit: true,
             },
         );
