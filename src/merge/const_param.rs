@@ -2046,7 +2046,13 @@ mod tests {
         let features = WasmFeatures {
             reference_types: false,
         };
-        const_param::_merge_funcs(&mut module, features, Config { ignore_merge_benefit: true });
+        const_param::_merge_funcs(
+            &mut module,
+            features,
+            Config {
+                ignore_merge_benefit: true,
+            },
+        );
         assert_eq!(module.tables.iter().count(), 1);
 
         assert_eq!(module.functions().count(), 5);
