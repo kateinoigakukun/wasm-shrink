@@ -2,7 +2,6 @@
 //!
 //! ## TODO
 //! - Merge functions bottom-up in call graph
-//! - Allow direct callee difference
 
 use std::collections::HashSet;
 use std::collections::{hash_map::DefaultHasher, HashMap};
