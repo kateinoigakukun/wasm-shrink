@@ -94,7 +94,24 @@ fn func_display_name(f: &walrus::Function) -> &str {
     f.name.as_ref().map(String::as_str).unwrap_or("unknown")
 }
 
+struct Config {
+    /// force merging functions even though merge benefit is less than threshold (only for testing)
+    ignore_merge_benefit: bool,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            ignore_merge_benefit: false,
+        }
+    }
+}
+
 pub fn merge_funcs(module: &mut walrus::Module, features: WasmFeatures) {
+    _merge_funcs(module, features, Config::default());
+}
+
+fn _merge_funcs(module: &mut walrus::Module, features: WasmFeatures, config: Config) {
     let mut call_graph = CallGraph::build_from(module);
     let mut table_builder = SecondaryTableBuilder::new(module, features);
     let fn_classes = collect_equivalence_class(module, table_builder.is_some());
@@ -126,6 +143,7 @@ pub fn merge_funcs(module: &mut walrus::Module, features: WasmFeatures) {
             &mut call_graph,
             &mut table_builder,
             &mut stats,
+            &config,
         );
     }
     log::debug!("MERGE-STATS: {:?}", stats);
@@ -357,6 +375,7 @@ fn try_merge_equivalence_class(
     call_graph: &mut CallGraph,
     table_builder: &mut Option<SecondaryTableBuilder>,
     stats: &mut Stats,
+    config: &Config,
 ) {
     let mut params = match derive_params(&class, module, table_builder.is_some()) {
         Some(params) => params,
@@ -409,7 +428,7 @@ fn try_merge_equivalence_class(
         removed_instrs,
         added_instrs
     );
-    if !has_benefit {
+    if !has_benefit && !config.ignore_merge_benefit {
         log::debug!(
             "SKIP-MERGING: '{}' based on merge-benefit",
             func_display_name(primary_func)
@@ -2007,5 +2026,39 @@ mod tests {
         let f = module.functions().next().unwrap().kind.unwrap_local();
         let instrs = dfs_pre_order_iter(f, f.entry_block()).collect::<Vec<_>>();
         assert_eq!(instrs.len(), 7, "{:?}", instrs)
+    }
+
+    #[test]
+    fn test_indirection() {
+        let mut module = walrus::Module::default();
+        let mut callee1 = FunctionBuilder::new(&mut module.types, &[], &[]);
+        callee1.func_body().i32_const(42); // add const to avoid merging callees
+        let callee1 = callee1.finish(vec![], &mut module.funcs);
+        let callee2 = FunctionBuilder::new(&mut module.types, &[], &[]);
+        let callee2 = callee2.finish(vec![], &mut module.funcs);
+
+        let mut f1_builder = FunctionBuilder::new(&mut module.types, &[], &[]);
+        f1_builder.func_body().call(callee1);
+        f1_builder.finish(vec![], &mut module.funcs);
+
+        let mut f2_builder = FunctionBuilder::new(&mut module.types, &[], &[]);
+        f2_builder.func_body().call(callee2);
+        f2_builder.finish(vec![], &mut module.funcs);
+        let features = WasmFeatures {
+            reference_types: false,
+        };
+        const_param::_merge_funcs(&mut module, features, Config { ignore_merge_benefit: true });
+        assert_eq!(module.tables.iter().count(), 1);
+
+        assert_eq!(module.functions().count(), 5);
+
+        assert_eq!(module.elements.iter().count(), 1);
+        let elem = module.elements.iter().next().expect("exactly one elem seg");
+        let mut members = elem.members.iter().flatten().collect::<Vec<_>>();
+        assert_eq!(members.len(), 2);
+        members.sort();
+        let mut expected_members = vec![&callee1, &callee2];
+        expected_members.sort();
+        assert_eq!(members, expected_members);
     }
 }
