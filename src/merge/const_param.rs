@@ -110,12 +110,13 @@ pub fn merge_funcs(module: &mut walrus::Module, features: WasmFeatures) {
             func_display_name(class.primary_func(&module)),
             class.hash
         );
-        for fn_id in class.funcs.iter().skip(1) {
+        for fn_id in class.funcs.iter() {
             log::debug!(" - {}", func_display_name(module.funcs.get(*fn_id)));
         }
         mergable_funcs += class.funcs.len() - 1;
     }
-    log::debug!("mergable_funcs = {}", mergable_funcs);
+    log::debug!("FUNCTION-CLASSES = {}", fn_classes.len());
+    log::debug!("MERGABLE-FUNCS = {}", mergable_funcs);
 
     let mut stats = Stats::default();
     for class in fn_classes {
@@ -847,7 +848,11 @@ fn derive_params(
             .map(|iter| iter.next())
             .collect::<Option<Vec<&Instr>>>()?;
 
-        log::trace!("derive_params: compute diff between {:?} and {:?}", primary_instr, siblings);
+        log::trace!(
+            "derive_params: compute diff between {:?} and {:?}",
+            primary_instr,
+            siblings
+        );
         let diff = match consts_diff(primary_instr, siblings, module, is_indirector_enabled) {
             Some(diff) => diff,
             None => continue,
