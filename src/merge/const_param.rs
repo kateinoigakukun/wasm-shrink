@@ -56,6 +56,7 @@ struct Stats {
 
 #[derive(Debug)]
 struct EquivalenceClass {
+    /// primary function shuold be in funcs
     primary_func: FunctionId,
     /// List of functions belonging to a same class
     funcs: Vec<FunctionId>,
@@ -186,7 +187,7 @@ fn collect_equivalence_class(
             if !found {
                 classes.push(EquivalenceClass {
                     primary_func: f.id(),
-                    funcs: vec![],
+                    funcs: vec![f.id()],
                     hash: key,
                 })
             }
@@ -1496,7 +1497,7 @@ mod tests {
         path::{Path, PathBuf},
     };
 
-    use walrus::{FunctionBuilder, ValType};
+    use walrus::{ir::LoadKind, ir::MemArg, FunctionBuilder, ValType};
 
     use crate::merge::const_param::{self, *};
 
@@ -1622,6 +1623,45 @@ mod tests {
         func_ids.insert(&class.primary_func);
 
         assert_eq!(func_ids, vec![f1_id, f2_id].iter().collect());
+    }
+
+    #[test]
+    fn test_collect_equivalence_class_1() {
+        let mut module = walrus::Module::default();
+        let mem = module.memories.add_local(false, 0, None);
+        let mut f1_builder = FunctionBuilder::new(&mut module.types, &[], &[]);
+        f1_builder
+            .func_body()
+            .i32_const(0)
+            .load(
+                mem,
+                LoadKind::I32 { atomic: false },
+                MemArg {
+                    align: 1,
+                    offset: 0,
+                },
+            )
+            .drop();
+        f1_builder.finish(vec![], &mut module.funcs);
+        let mut f2_builder = FunctionBuilder::new(&mut module.types, &[], &[]);
+        f2_builder
+            .func_body()
+            .i32_const(0)
+            .load(
+                mem,
+                LoadKind::I32 { atomic: false },
+                MemArg {
+                    align: 1,
+                    offset: 1,
+                },
+            )
+            .drop();
+        f2_builder.finish(vec![], &mut module.funcs);
+
+        let classes = collect_equivalence_class(&module, false);
+        assert_eq!(classes.len(), 2);
+        assert_eq!(classes[0].funcs.len(), 1);
+        assert_eq!(classes[1].funcs.len(), 1);
     }
 
     #[test]
