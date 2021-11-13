@@ -47,6 +47,7 @@ impl FunctionHash {
 #[derive(Debug, Default, Serialize)]
 pub struct Stats {
     all_functions: usize,
+    equivalence_classes: usize,
     merged_functions: usize,
     exactly_same_functions: usize,
     thunk_functions: usize,
@@ -136,6 +137,7 @@ fn _merge_funcs(module: &mut walrus::Module, features: WasmFeatures, config: Opt
 
     let mut stats = Stats::default();
     stats.all_functions = module.functions().count();
+    stats.equivalence_classes = fn_classes.len();
     for class in fn_classes {
         try_merge_equivalence_class(
             class,
