@@ -1988,6 +1988,11 @@ mod tests {
     }
 
     #[test]
+    fn test_merge_3() {
+        check_no_crash("3.wasm")
+    }
+
+    #[test]
     fn test_traverse_emtpy_block() {
         let fixture = PathBuf::from(file!())
             .parent()
