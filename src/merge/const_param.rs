@@ -461,9 +461,13 @@ fn try_merge_equivalence_class(
 
     let mut replace_map = HashMap::default();
 
-    log::debug!("class.funcs = {:?}", class.funcs);
-    log::debug!("params = {:?}", params);
     for (idx, from) in class.funcs.iter().enumerate() {
+        let name = module.funcs.get(*from).name.clone();
+        log::debug!(
+            "Create thunk for '{}'",
+            name.as_ref().unwrap_or(&format!("{:?}", from))
+        );
+
         let params = params.iter().map(|v| v.as_value(idx)).collect::<Vec<_>>();
         let params = if let Some(params) =
             lower_const_value_to_wasm_value(params, table_builder, module, call_graph)
@@ -472,10 +476,9 @@ fn try_merge_equivalence_class(
         } else {
             continue;
         };
-        let name = module.funcs.get(*from).name.as_ref().map(String::as_str);
 
         let thunk_id = create_thunk_func(
-            class.thunk_func_name(name.clone()),
+            class.thunk_func_name(name.as_ref().map(String::as_str)),
             &original_param_tys,
             &original_result_tys,
             merged_func,
