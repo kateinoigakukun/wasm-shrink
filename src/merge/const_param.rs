@@ -113,15 +113,17 @@ pub fn merge_funcs(module: &mut walrus::Module, features: WasmFeatures) -> Stats
 
 fn _merge_funcs(module: &mut walrus::Module, features: WasmFeatures, config: Options) -> Stats {
     let mut call_graph = CallGraph::build_from(module);
-    let mut table_builder = SecondaryTableBuilder::new(module, features);
-    let fn_classes = collect_equivalence_class(module, table_builder.is_some());
+    let secondary_table_strategy = SecondaryTableBuilder::detect_strategy(module, features);
+    let fn_classes = collect_equivalence_class(module, secondary_table_strategy.is_some());
 
     log::debug!("Dump function equivalence classes");
     let mut mergable_funcs = 0;
+    let mut found_eligible_class = false;
     for class in fn_classes.iter() {
         if !class.is_eligible_to_merge() {
             continue;
         }
+        found_eligible_class = true;
         log::debug!(
             "EC: primary={}, hash={:?}",
             func_display_name(class.primary_func(&module)),
@@ -138,6 +140,14 @@ fn _merge_funcs(module: &mut walrus::Module, features: WasmFeatures, config: Opt
     let mut stats = Stats::default();
     stats.all_functions = module.functions().count();
     stats.equivalence_classes = fn_classes.len();
+
+    if !found_eligible_class {
+        return stats;
+    }
+
+    let mut table_builder =
+        secondary_table_strategy.map(|strategy| SecondaryTableBuilder::new(module, strategy));
+
     for class in fn_classes {
         try_merge_equivalence_class(
             class,
@@ -219,6 +229,11 @@ fn collect_equivalence_class(
     fn_classes
 }
 
+enum SecondaryTableStrategy {
+    NewTable,
+    ReuseTable { id: TableId, offset: usize },
+}
+
 struct SecondaryTableBuilder {
     table_id: TableId,
     element_id: ElementId,
@@ -226,13 +241,16 @@ struct SecondaryTableBuilder {
 }
 
 impl SecondaryTableBuilder {
-    fn new(module: &mut walrus::Module, features: WasmFeatures) -> Option<Self> {
+    fn detect_strategy(
+        module: &walrus::Module,
+        features: WasmFeatures,
+    ) -> Option<SecondaryTableStrategy> {
         if std::env::var("WASM_SHRINK_DISABLE_INDIRECTOR").is_ok() {
             log::debug!("INDIRECTOR: disabled due to environment variable");
             return None;
         }
-        let (table_id, elements_offset) = if features.reference_types {
-            (module.tables.add_local(0, None, ValType::Funcref), 0)
+        if features.reference_types {
+            return Some(SecondaryTableStrategy::NewTable);
         } else {
             let maybe_existing = module.tables.iter().next().map(|t| t.id());
             if let Some(existing) = maybe_existing {
@@ -272,10 +290,22 @@ impl SecondaryTableBuilder {
                     };
                     end_offsets.push(offset + len);
                 }
-                (existing, end_offsets.into_iter().max().unwrap_or(0))
+                return Some(SecondaryTableStrategy::ReuseTable {
+                    id: existing,
+                    offset: end_offsets.into_iter().max().unwrap_or(0),
+                });
             } else {
+                return Some(SecondaryTableStrategy::NewTable);
+            }
+        }
+    }
+
+    fn new(module: &mut walrus::Module, strategy: SecondaryTableStrategy) -> Self {
+        let (table_id, elements_offset) = match strategy {
+            SecondaryTableStrategy::NewTable => {
                 (module.tables.add_local(0, None, ValType::Funcref), 0)
             }
+            SecondaryTableStrategy::ReuseTable { id, offset } => (id, offset),
         };
         let element_id = module.elements.add(
             ElementKind::Active {
@@ -285,11 +315,11 @@ impl SecondaryTableBuilder {
             ValType::Funcref,
             vec![],
         );
-        Some(Self {
+        Self {
             table_id,
             element_id,
             elements_offset,
-        })
+        }
     }
     fn add(
         &mut self,
@@ -1841,14 +1871,7 @@ mod tests {
         let class = classes.get(0).unwrap();
 
         let params = derive_params(class, &module, false).unwrap();
-        let features = WasmFeatures::detect_from(&module);
-        let merged = create_merged_func(
-            None,
-            class.primary_func,
-            &params,
-            &SecondaryTableBuilder::new(&mut module, features),
-            &mut module,
-        );
+        let merged = create_merged_func(None, class.primary_func, &params, &None, &mut module);
 
         let merged = module.funcs.get(merged);
         let merged_params = module.types.params(merged.ty());
